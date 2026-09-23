@@ -315,97 +315,92 @@
       : `https://t.me/share/url?url=${encodeURIComponent("https://umny-zakup.vercel.app")}&text=${encodeURIComponent(text)}`;
   }
 
-  function openOrderSheet(k, scope = sheet.scope) {
-    sheet = { k, scope, q: "", link: null };
+  // Заказ поставщику — мастер из двух шагов: 1) выбрать товары, 2) проверить текст и отправить.
+  function openOrderSheet(k, scope = sheet.scope, step = 1) {
+    sheet = { k, scope, q: "", link: null, step: state.approved[k] ? 2 : step };
     openId = null;
     const d = $("#drawer");
-    d.innerHTML = `
-      <div class="d-head"><div style="min-width:0;flex:1">
-          <div class="muted" style="font-size:12.5px;margin-bottom:4px" id="osStep"></div>
-          <h2>Заказ ${esc(SUPS[k].name)}</h2>
-          <div class="seg" style="margin-top:10px;max-width:100%;overflow-x:auto" role="tablist">${Object.entries(SCOPES).map(([key, [l]]) => `<button class="${key === scope ? "active" : ""}" data-scope="${key}">${l}</button>`).join("")}</div>
+    d.innerHTML = `<div class="d-head"><div style="min-width:0;flex:1">
+          <div class="wiz" id="osWiz"></div>
+          <h2 id="osTitle"></h2>
         </div>
         <button class="d-close" aria-label="Закрыть"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
-      <div class="d-body">
-        <div id="osSum"></div>
-        <div class="os-search">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-          <input id="osQ" type="search" placeholder="Найти товар ${esc(SUPS[k].name)}: название, код 1С, артикул" autocomplete="off" aria-label="Поиск товара в заказе">
-        </div>
-        <div id="osFound"></div>
-        <div id="osList"></div>
-      </div>`;
+      <div class="d-body" id="osBody"></div>
+      <div class="os-bar" id="osBar"></div>`;
     $(".d-close", d).onclick = closeDrawer;
-    $$("[data-scope]", d).forEach((b) => (b.onclick = () => openOrderSheet(k, b.dataset.scope)));
-    let qt;
-    $("#osQ").oninput = (e) => { clearTimeout(qt); qt = setTimeout(() => { sheet.q = e.target.value.trim().toLowerCase(); refreshSheet(); }, 120); };
-    refreshSheet();
-    d.classList.add("open"); d.setAttribute("aria-hidden", "false"); $("#scrim").hidden = false;
+    refreshSheet(true);
+    d.classList.add("open"); d.setAttribute("aria-hidden", "false"); $("#scrim").hidden = false; d.scrollTop = 0;
   }
 
-  function refreshSheet() {
-    const { k, scope, q } = sheet;
-    const cand = orderCandidates(k, scope);
+  function refreshSheet(full = false) {
+    const { k, step } = sheet;
+    const cand = orderCandidates(k, sheet.scope);
     const lines = cand.filter((x) => x.on && x.final > 0);
-    const cov = Engine.priceCoverage(lines);
     const units = lines.reduce((a, x) => a + x.final, 0);
-    const crit = lines.filter((x) => ST[x.r.status].rank <= 1).length;
-    const ap = state.approved[k];
-    const off = cand.filter((x) => !x.on).length;
-    const manual = cand.filter((x) => x.manual).length;
-    $("#osStep").textContent = `Заказ поставщику · ${ap ? "шаг 3 из 3: отправка" : "шаг 1–2 из 3: выбор и согласование"}`;
-    $("#osSum").innerHTML = `
-      <div class="os-facts">
-        <div><b class="num">${fmt(lines.length)}</b><span>позиций в заказе${off ? ` · ${fmt(off)} снято` : ""}${manual ? ` · ${fmt(manual)} добавлено` : ""}</span></div>
-        <div><b class="num">${fmt(units)}</b><span>штук</span></div>
-        <div class="${crit ? "crit" : ""}"><b class="num">${fmt(crit)}</b><span>нет товара или просрочено</span></div>
-        <div><b class="num">${cov.priced ? money(cov.value) : "—"}</b><span>${cov.priced ? (cov.missing ? `по ценам ${fmt(cov.priced)} из ${fmt(cov.lines)} поз.` : "по себестоимости") : "цен нет"}</span></div>
+    const cov = Engine.priceCoverage(lines);
+    $("#osWiz").innerHTML = `<span class="${step === 1 ? "on" : "done"}">1 · Выбрать товары</span><i></i><span class="${step === 2 ? "on" : ""}">2 · Проверить и отправить</span>`;
+    $("#osTitle").textContent = step === 1 ? `Какие товары заказать у ${SUPS[k].name}?` : `Отправить заказ ${SUPS[k].name}`;
+    const total = `<b class="num">${fmt(lines.length)}</b> поз. · <b class="num">${fmt(units)}</b> шт${cov.priced ? ` · <b class="num">${money(cov.value)}</b>${cov.missing ? " по изв. ценам" : ""}` : ""}`;
+    if (step === 1) {
+      if (full) renderStep1(k);
+      renderStep1List(k, cand);
+      $("#osBar").innerHTML = `<div class="os-bar-t">Выбрано: ${total}</div>
+        <button class="btn primary" id="osNext" ${lines.length ? "" : "disabled"}>Далее: проверить и отправить →</button>`;
+      $("#osNext").onclick = () => { sheet.step = 2; sheet.link = null; refreshSheet(true); $("#drawer").scrollTop = 0; };
+    } else {
+      renderStep2(k, lines, total);
+    }
+  }
+
+  function renderStep1(k) {
+    $("#osBody").innerHTML = `
+      <div class="os-howto">Сервис уже отметил товары, которые <b>нужно заказать</b> (набор можно сменить ниже). Снимите галочки с лишнего, нажмите <b>«Снять все»</b>, чтобы выбрать с нуля, или найдите любой товар поставщика через поиск. Затем нажмите <b>«Далее»</b> внизу.</div>
+      <div class="os-tools">
+        <div class="seg" role="tablist" aria-label="Какие товары отметить">${Object.entries(SCOPES).map(([key, [l]]) => `<button class="${key === sheet.scope ? "active" : ""}" data-scope="${key}">${l}</button>`).join("")}</div>
+        <button class="btn sm" id="osAllOn">Отметить все</button>
+        <button class="btn sm" id="osAllOff">Снять все</button>
       </div>
-      <div class="order-steps">
-        ${ap
-          ? `<div class="step-done"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg>Согласовано ${esc(ap.at)} на этом устройстве <button class="btn sm ghost" id="osUnapprove">Изменить заказ</button></div>`
-          : `<div class="os-howto"><b>1.</b> Снимите галочки с лишнего или добавьте товар через поиск ниже · <b>2.</b> Нажмите кнопку отправки — заказ будет согласован и откроется мессенджер</div>`}
-        ${sheet.link && sheet.k === k ? `<div class="os-link">Если ${sheet.link.kind === "wa" ? "WhatsApp" : "Telegram"} не открылся автоматически, нажмите:
-          <a class="btn share ${sheet.link.kind}" href="${esc(sheet.link.url)}" target="_blank" rel="noopener">Открыть ${sheet.link.kind === "wa" ? "WhatsApp" : "Telegram"} с текстом заказа</a>
-          <span class="muted">Нужен файл для поставщика? Нажмите «Excel» и приложите его к сообщению.</span></div>` : ""}
-        <div class="send-row">
-          ${lines.length ? `<a class="btn share wa" data-send="wa" href="${esc(shareUrl("wa", k, lines))}" target="_blank" rel="noopener"><svg viewBox="0 0 24 24"><path d="M4 20l1.3-4A8 8 0 1 1 8 19z"/></svg>${ap ? "WhatsApp" : "Согласовать и отправить в WhatsApp"}</a>
-          <a class="btn share tg" data-send="tg" href="${esc(shareUrl("tg", k, lines))}" target="_blank" rel="noopener"><svg viewBox="0 0 24 24"><path d="M21 4L3 11l6 2 2 6 3-4 5 4z"/></svg>${ap ? "Telegram" : "Согласовать и отправить в Telegram"}</a>` : ""}
-          <button class="btn share" data-send="mail" ${lines.length ? "" : "disabled"}><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>Почта</button>
-          ${navigator.canShare ? `<button class="btn share" data-send="file" ${lines.length ? "" : "disabled"}><svg viewBox="0 0 24 24"><path d="M12 3v12M7 8l5-5 5 5M5 14v5h14v-5"/></svg>Поделиться файлом</button>` : ""}
-          <button class="btn share" id="osXls"><svg viewBox="0 0 24 24"><path d="M12 4v11m0 0l-4-4m4 4l4-4M5 19h14"/></svg>Excel</button>
-          ${ap ? "" : `<button class="btn sm ghost" id="osApprove" ${lines.length ? "" : "disabled"}>Только согласовать</button>`}
-        </div>
-        <p class="muted" style="font-size:12px;margin:8px 0 0">Сервис ничего не отправляет сам: откроется WhatsApp или Telegram с готовым текстом заказа (${lines.length <= 50 ? "все позиции" : "итоги и первые 30 позиций"}), получателя выбираете вы. Файл скачивается только кнопкой «Excel»${navigator.canShare ? "; «Поделиться файлом» отправит Excel сразу" : ""}.</p>
-      </div>`;
-    // найденные товары поставщика, которых нет в списке — можно добавить
+      <div class="os-search">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        <input id="osQ" type="search" placeholder="Найти товар ${esc(SUPS[k].name)}: название, код 1С, артикул" autocomplete="off" aria-label="Поиск товара">
+      </div>
+      <div id="osFound"></div>
+      <div id="osList"></div>`;
+    $$("[data-scope]").forEach((b) => (b.onclick = () => { sheet.scope = b.dataset.scope; refreshSheet(true); }));
+    let qt;
+    $("#osQ").oninput = (e) => { clearTimeout(qt); qt = setTimeout(() => { sheet.q = e.target.value.trim().toLowerCase(); refreshSheet(); }, 120); };
+    const pk = pickOf(k);
+    const setAll = (on) => { orderCandidates(k, sheet.scope).forEach((x) => { pk.off = pk.off.filter((id) => id !== x.s.id); if (!on) pk.off.push(x.s.id); }); savePick(); refreshSheet(); };
+    $("#osAllOn").onclick = () => setAll(true);
+    $("#osAllOff").onclick = () => setAll(false);
+  }
+
+  function renderStep1List(k, cand) {
+    const q = sheet.q;
     const inList = new Set(cand.map((x) => x.s.id));
     const match = (x) => `${x.s.n} ${x.s.id} ${x.s.art || ""}`.toLowerCase().includes(q);
-    const found = q.length >= 2 && !ap ? rows.filter((x) => x.s.sup === k && !inList.has(x.s.id) && match(x)).slice(0, 8) : [];
-    $("#osFound").innerHTML = found.length ? `<div class="os-found"><div class="muted" style="font-size:12.5px;margin-bottom:6px">Нет в заказе — можно добавить:</div>
+    const found = q.length >= 2 ? rows.filter((x) => x.s.sup === k && !inList.has(x.s.id) && match(x)).slice(0, 8) : [];
+    $("#osFound").innerHTML = found.length ? `<div class="os-found"><div class="muted" style="font-size:12.5px;margin-bottom:6px">Других товаров нет в списке — можно добавить:</div>
       ${found.map((x) => `<div class="os-f"><span><b>${esc(x.s.n)}</b><br><span class="muted">${esc(x.s.id)}${x.s.art ? " · " + esc(x.s.art) : ""} · остаток ${fmt(x.r.stock)} · ${x.r.qty > 0 ? `рекомендовано ${fmt(x.r.qty)} шт` : "сервис не рекомендует заказ"}</span></span><button class="btn sm" data-add="${esc(x.s.id)}">+ Добавить</button></div>`).join("")}</div>` : "";
     const shown = q ? cand.filter(match) : cand;
     $("#osList").innerHTML = shown.length ? `<div class="table-wrap"><table class="acts os-table">
-        <thead><tr><th style="width:34px"><input type="checkbox" id="osAll" ${shown.every((x) => x.on) ? "checked" : ""} ${ap ? "disabled" : ""} aria-label="Выбрать все показанные"></th><th>Товар</th><th>Статус</th><th class="r">Заказ, шт</th></tr></thead>
+        <thead><tr><th style="width:34px"></th><th>Товар</th><th>Статус</th><th class="r">Заказать, шт</th></tr></thead>
         <tbody>${shown.slice(0, 400).map((x) => `<tr class="${x.on ? "" : "off"}">
-          <td><input type="checkbox" data-on="${esc(x.s.id)}" ${x.on ? "checked" : ""} ${ap ? "disabled" : ""} aria-label="Включить в заказ"></td>
-          <td><div class="p-name">${esc(x.s.n)}${x.manual ? ' <span class="badge in">добавлен вручную</span>' : ""}</div><div class="p-meta"><span>${esc(x.s.id)}</span>${x.s.art ? `<span>${esc(x.s.art)}</span>` : ""}<span>${x.r.status === "now" ? "заказать немедленно" : x.r.safeDay == null ? "" : x.r.safeDay <= 0 ? "заказать сегодня" : "до " + Engine.fmtDay(x.r.safeDay)}</span></div></td>
+          <td><input type="checkbox" data-on="${esc(x.s.id)}" ${x.on ? "checked" : ""} aria-label="Заказать этот товар"></td>
+          <td><div class="p-name">${esc(x.s.n)}${x.manual ? ' <span class="badge in">добавлен вручную</span>' : ""}</div><div class="p-meta"><span>${esc(x.s.id)}</span>${x.s.art ? `<span>${esc(x.s.art)}</span>` : ""}<span>остаток ${fmt(x.r.stock)}</span></div></td>
           <td>${statusPill(x.r.status)}</td>
-          <td class="r"><input class="qty-input ${state.overrides[x.s.id] != null ? "edited" : ""}" type="number" min="0" step="${x.s.moq}" value="${x.final}" data-oq="${esc(x.s.id)}" ${ap || !x.on ? "disabled" : ""} aria-label="Количество">${x.on && !(x.final > 0) ? '<div class="rec-hint" style="color:var(--warn)">укажите количество</div>' : ""}</td>
+          <td class="r"><input class="qty-input ${state.overrides[x.s.id] != null ? "edited" : ""}" type="number" min="0" step="${x.s.moq}" value="${x.final}" data-oq="${esc(x.s.id)}" ${x.on ? "" : "disabled"} aria-label="Количество">${x.on && !(x.final > 0) ? '<div class="rec-hint" style="color:var(--warn)">укажите количество</div>' : ""}</td>
         </tr>`).join("")}</tbody></table></div>
-        ${shown.length > 400 ? `<p class="muted" style="font-size:12.5px">Показаны первые 400 из ${fmt(shown.length)} — уточните поиск. В заказ и Excel попадают все отмеченные.</p>` : ""}`
-      : `<div class="empty">${q ? "В заказе таких товаров нет — выше можно добавить найденные." : "В этом наборе позиций нет. Выберите «+ эта неделя» или «Весь заказ»."}</div>`;
-
+        ${shown.length > 400 ? `<p class="muted" style="font-size:12.5px">Показаны первые 400 из ${fmt(shown.length)} — уточните поиск.</p>` : ""}`
+      : `<div class="empty">${q ? "Среди отмеченных таких нет — выше можно добавить найденные." : "Список пуст. Выберите другой набор выше или найдите товар поиском."}</div>`;
     const pk = pickOf(k);
     const setOn = (id, on) => { pk.off = pk.off.filter((x) => x !== id); if (!on) pk.off.push(id); };
     $$("[data-on]").forEach((c) => (c.onchange = () => { setOn(c.dataset.on, c.checked); savePick(); refreshSheet(); }));
-    if ($("#osAll")) $("#osAll").onchange = (e) => { shown.forEach((x) => setOn(x.s.id, e.target.checked)); savePick(); refreshSheet(); };
     $$("[data-add]").forEach((b) => (b.onclick = () => {
       const id = b.dataset.add;
       if (!pk.add.includes(id)) pk.add.push(id);
       setOn(id, true); savePick();
-      const x = rows.find((r) => r.s.id === id);
-      if (!(x.final > 0)) toast("Товар добавлен — укажите количество");
+      if (!(rows.find((r) => r.s.id === id).final > 0)) toast("Товар добавлен — укажите количество");
       refreshSheet();
     }));
     $$("[data-oq]").forEach((inp) => (inp.onchange = () => {
@@ -414,22 +409,46 @@
       if (v === row.r.qty) delete state.overrides[row.s.id]; else state.overrides[row.s.id] = v;
       store.set("overrides", state.overrides); recompute(); render(); refreshSheet();
     }));
+  }
+
+  function renderStep2(k, lines, total) {
+    const ap = state.approved[k];
+    const preview = orderSummary(k, lines);
+    $("#osBody").innerHTML = `
+      ${ap ? `<div class="step-done"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg>Согласовано ${esc(ap.at)} на этом устройстве</div>` : ""}
+      ${sheet.link ? `<div class="os-link">Если ${sheet.link.kind === "wa" ? "WhatsApp" : "Telegram"} не открылся, нажмите:
+        <a class="btn share ${sheet.link.kind}" href="${esc(sheet.link.url)}" target="_blank" rel="noopener">Открыть ${sheet.link.kind === "wa" ? "WhatsApp" : "Telegram"}</a>
+        <span class="muted">Нужен файл для поставщика? Кнопка «Excel» ниже.</span></div>` : ""}
+      <div class="os-block"><div class="os-label">В заказе</div><div class="os-total">${total}</div>
+        <div class="os-mini">${lines.slice(0, 200).map((x) => `<div><span>${esc(x.s.n)}</span><b class="num">${fmt(x.final)} шт</b></div>`).join("")}${lines.length > 200 ? `<div class="muted">…и ещё ${fmt(lines.length - 200)}</div>` : ""}</div></div>
+      <div class="os-block"><div class="os-label">Так будет выглядеть сообщение</div><pre class="os-preview">${esc(preview)}</pre></div>
+      <p class="muted" style="font-size:12px;margin:0">Нажатие кнопки отправки = согласование заказа. Сервис ничего не отправляет сам: откроется мессенджер с этим текстом, получателя выберете вы. Файл скачивается только кнопкой «Excel».</p>`;
+    $("#osBar").innerHTML = `
+      <button class="btn" id="osBack">← Изменить выбор</button>
+      <div class="send-row" style="margin-left:auto">
+        <a class="btn share wa" data-send="wa" href="${esc(shareUrl("wa", k, lines))}" target="_blank" rel="noopener"><svg viewBox="0 0 24 24"><path d="M4 20l1.3-4A8 8 0 1 1 8 19z"/></svg>WhatsApp</a>
+        <a class="btn share tg" data-send="tg" href="${esc(shareUrl("tg", k, lines))}" target="_blank" rel="noopener"><svg viewBox="0 0 24 24"><path d="M21 4L3 11l6 2 2 6 3-4 5 4z"/></svg>Telegram</a>
+        <button class="btn share" data-send="mail">Почта</button>
+        ${navigator.canShare ? `<button class="btn share" data-send="file">Поделиться файлом</button>` : ""}
+        <button class="btn share" id="osXls">Excel</button>
+      </div>`;
+    $("#osBack").onclick = () => {
+      if (state.approved[k]) { delete state.approved[k]; store.set("approved", state.approved); render(); }
+      sheet.step = 1; sheet.link = null; refreshSheet(true);
+    };
     const approve = () => {
       if (state.approved[k]) return state.approved[k];
       state.approved[k] = { at: new Date().toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }), n: lines.length };
       store.set("approved", state.approved);
       return state.approved[k];
     };
-    const xls = (a = state.approved[k]) => { XLSX.writeFile(buildWorkbook([k], () => lines, a ? `Согласовано ${a.at}, отправляет менеджер` : null), orderFile(k)); };
+    const xls = (a = state.approved[k]) => XLSX.writeFile(buildWorkbook([k], () => lines, a ? `Согласовано ${a.at}, отправляет менеджер` : null), orderFile(k));
     $("#osXls").onclick = () => { xls(); toast("Excel скачан"); };
-    if ($("#osApprove")) $("#osApprove").onclick = () => { approve(); render(); refreshSheet(); toast("Заказ согласован"); };
-    if ($("#osUnapprove")) $("#osUnapprove").onclick = () => { delete state.approved[k]; store.set("approved", state.approved); render(); refreshSheet(); };
     $$("[data-send]").forEach((b) => (b.onclick = async (e) => {
       const kind = b.dataset.send;
-      const a = approve();                         // нажатие = подтверждение менеджера
-      const later = () => setTimeout(() => { render(); refreshSheet(); }, 60);
+      const a = approve();
+      const later = () => setTimeout(() => { render(); refreshSheet(true); }, 60);
       if (kind === "wa" || kind === "tg") {
-        // переход по ссылке делает сам браузер (не блокируется); Excel — следом
         sheet.link = { url: b.getAttribute("href"), kind };
         toast(`Открывается ${kind === "wa" ? "WhatsApp" : "Telegram"} с текстом заказа`);
         later();
@@ -451,14 +470,7 @@
     }));
   }
 
-  /** Подсветить кнопку отправки в окне заказа: менеджер проверяет выбор и нажимает её сам. */
-  function highlightSend(kind) {
-    const b = $(`#drawer [data-send="${kind}"]`);
-    if (!b) return;
-    b.classList.add("pulse");
-    b.scrollIntoView({ block: "center" });
-    toast("Проверьте выбор товаров и нажмите кнопку отправки");
-  }
+  function highlightSend() { toast("Шаг 1: отметьте товары и нажмите «Далее» — затем выберите WhatsApp или Telegram"); }
   /** Кнопка «Отправить заказ» в шапке: выбрать поставщика. */
   function sendChooser() {
     const keys = Object.keys(REAL_SUPS).filter((k) => state.sup === "all" || k === state.sup);
@@ -1779,7 +1791,7 @@
     if (h.get("sup") && SUPS[h.get("sup")]) { state.sup = h.get("sup"); renderSupSeg(); renderGroupSel(); recompute(); render(); }
     if (h.get("tab")) switchTab(h.get("tab"));
     if (h.get("sku")) openDrawer(h.get("sku"));
-    if (h.get("order") && REAL_SUPS[h.get("order")]) openOrderSheet(h.get("order"), "today");
+    if (h.get("order") && REAL_SUPS[h.get("order")]) openOrderSheet(h.get("order"), "today", +h.get("step") === 2 ? 2 : 1);
     if (h.get("sec")) document.getElementById(h.get("sec"))?.scrollIntoView();
   }
   try {

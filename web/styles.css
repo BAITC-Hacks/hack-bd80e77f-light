@@ -561,3 +561,22 @@ h2.sec:first-child { margin-top: 4px; }
 .os-link { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 13px; background: var(--good-soft); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
 .os-link a { text-decoration: none; }
 a.btn { text-decoration: none; }
+/* ---------- мастер заказа: шаг 1 выбор, шаг 2 отправка ---------- */
+.wiz { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-3); margin-bottom: 6px; flex-wrap: wrap; }
+.wiz span { padding: 3px 10px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line); white-space: nowrap; }
+.wiz span.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.wiz span.done { color: var(--good); border-color: color-mix(in srgb, var(--good) 40%, transparent); }
+.wiz i { width: 18px; height: 1px; background: var(--line-strong); }
+.os-howto { background: var(--accent-soft); border-radius: 10px; padding: 10px 12px; font-size: 13px; color: var(--text); }
+.os-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.os-bar { position: sticky; bottom: 0; z-index: 3; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 24px calc(12px + env(safe-area-inset-bottom, 0px)); background: var(--surface); border-top: 1px solid var(--line); box-shadow: 0 -6px 18px rgba(20,20,30,.06); }
+.os-bar .os-bar-t { font-size: 14px; color: var(--text-2); }
+.os-bar #osNext { margin-left: auto; }
+.os-block { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+.os-label { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-3); font-weight: 600; margin-bottom: 6px; }
+.os-total { font-size: 15px; margin-bottom: 8px; }
+.os-mini { max-height: 220px; overflow-y: auto; font-size: 13px; }
+.os-mini div { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-top: 1px solid var(--line); }
+.os-mini div:first-child { border-top: 0; }
+.os-preview { margin: 0; white-space: pre-wrap; font: 13px/1.5 var(--font); background: var(--good-soft); border-radius: 10px; padding: 12px 14px; max-height: 260px; overflow-y: auto; color: var(--text); }
+@media (max-width: 600px) { .os-bar { padding-left: 16px; padding-right: 16px; } .os-bar .send-row { margin-left: 0 !important; width: 100%; } .os-bar #osNext { width: 100%; justify-content: center; } }
