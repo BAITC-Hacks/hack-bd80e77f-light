@@ -25,7 +25,8 @@ ONEOFF_MIN_DOCS = 8          # минимум накладных по артик
 ONEOFF_MAD_K = 6.0           # порог: медиана + K × MAD
 ONEOFF_MEDIAN_X = 5.0        # и не меньше X медиан
 ONEOFF_MONTH_SHARE = 0.25    # и накладная — заметная доля продаж месяца
-ONEOFF_RECURRING = 0.25      # если крупные заказы идут в > 25 % месяцев — это регулярный оптовый спрос
+ONEOFF_RECURRING = 0.20      # если крупные заказы идут в > 20 % месяцев
+ONEOFF_RECURRING_MONTHS = 4  # или в 4+ разных месяцах — это регулярный оптовый спрос
 HAMPEL_K = 3.0               # фильтр Хампеля для месячного ряда
 LEVEL_WINDOW = 6             # мес. для базового уровня
 TREND_CLIP = (-0.30, 0.50)   # ограничение роста год к году
@@ -56,7 +57,7 @@ def detect_oneoffs(lines: pd.DataFrame, sales: pd.DataFrame) -> pd.DataFrame:
       • больше медиана + 6·MAD (и больше Q3 + 3·IQR),
       • больше 5 медиан,
       • составляет ≥ 25 % продаж артикула за месяц.
-    Если такие крупные заказы повторяются более чем в 25 % месяцев продаж артикула,
+    Если такие крупные заказы повторяются (в 4+ месяцах или в > 20 % месяцев продаж артикула),
     это постоянный оптовый клиент — такой спрос регулярный и не исключается.
     """
     if lines.empty:
@@ -89,7 +90,8 @@ def detect_oneoffs(lines: pd.DataFrame, sales: pd.DataFrame) -> pd.DataFrame:
     flagged = df.loc[mask]
     big_months = flagged.groupby("code")["month"].nunique()
     sale_months = df.groupby("code")["month"].nunique()
-    recurring = (big_months / sale_months.reindex(big_months.index)) > ONEOFF_RECURRING
+    recurring = (((big_months / sale_months.reindex(big_months.index)) > ONEOFF_RECURRING)
+                 | (big_months >= ONEOFF_RECURRING_MONTHS))
     flagged = flagged[~flagged["code"].isin(recurring[recurring].index)]
     return flagged[["code", "doc", "date", "month", "qty", "threshold", "median"]]
 
@@ -299,7 +301,7 @@ def recommend(a: SkuAnalysis, sku: dict, transit: list[dict], months: list[pd.Pe
     qty = math.ceil(need / moq - 1e-9) * moq if need > 0.5 else 0
 
     monthly_now = demand_h / H if H else 0
-    if qty > 0 and stock + in_transit < demand_lt:
+    if qty > 0 and stock + in_transit < demand_lt and demand_lt >= 1:
         urgency = "critical"
     elif qty > 0 and stock + in_transit < demand_lt + safety:
         urgency = "soon"

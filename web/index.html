@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Умный Закуп — заказы поставщикам</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232a78d6'/%3E%3Cpath d='M9 20l5-5 4 3 6-7' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="logo" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M9 20l5-5 4 3 6-7" /></svg></div>
+    <div>
+      <div class="brand-name">Умный Закуп</div>
+      <div class="brand-sub">Электрокомплект · склад Алматы</div>
+    </div>
+  </div>
+  <div class="seg" id="supSeg" role="tablist" aria-label="Поставщик"></div>
+  <div class="search">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+    <input id="q" type="search" placeholder="Поиск: название, код 1С, артикул" autocomplete="off">
+  </div>
+  <div class="top-actions">
+    <span class="asof" id="asof"></span>
+    <button class="btn ghost only-mobile" id="paramsToggle">Параметры</button>
+    <button class="btn primary" id="exportBtn">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0l-4-4m4 4l4-4M5 19h14"/></svg>
+      <span class="lbl">Экспорт в Excel</span>
+    </button>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="params" id="params">
+    <section>
+      <h3>Параметры расчёта</h3>
+      <div class="field" id="leadFields"></div>
+      <div class="field">
+        <label for="review">Период пересмотра <b id="reviewVal"></b></label>
+        <input type="range" id="review" min="0.5" max="3" step="0.5">
+        <small>как часто размещаем заказ поставщику</small>
+      </div>
+      <div class="field">
+        <label for="growth">Прогноз прироста рынка <b id="growthVal"></b></label>
+        <input type="range" id="growth" min="-30" max="50" step="5">
+        <small>ручная поправка поверх тренда</small>
+      </div>
+    </section>
+    <section>
+      <h3>Что учитывает алгоритм</h3>
+      <p class="hint">Выключите фактор — и сразу увидите, как он меняет заказ.</p>
+      <div id="toggles"></div>
+    </section>
+    <section class="note">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/></svg>
+      <div>Заказ <b>не отправляется</b> поставщику автоматически: только после утверждения менеджером. Данные клиентов в расчёте не используются.</div>
+    </section>
+  </aside>
+
+  <main>
+    <div class="kpis" id="kpis"></div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="orders">Заказ поставщикам</button>
+      <button class="tab" data-tab="analytics">Аналитика</button>
+      <button class="tab" data-tab="method">Как это работает</button>
+    </nav>
+
+    <section id="tab-orders" class="tabpane">
+      <div class="filters">
+        <div class="chips" id="urgChips"></div>
+        <select id="groupSel" aria-label="Группа товаров"></select>
+        <select id="abcSel" aria-label="Категория ABC">
+          <option value="all">Все категории</option>
+          <option value="A">A — частый спрос</option>
+          <option value="B">B — средний</option>
+          <option value="C">C — редкий</option>
+        </select>
+        <select id="sortSel" aria-label="Сортировка">
+          <option value="urgency">Сначала срочные</option>
+          <option value="value">По сумме заказа</option>
+          <option value="qty">По количеству</option>
+          <option value="name">По названию</option>
+        </select>
+        <label class="switch small"><input type="checkbox" id="onlyOrder" checked><span></span>Только к заказу</label>
+      </div>
+      <div id="orders"></div>
+    </section>
+
+    <section id="tab-analytics" class="tabpane" hidden></section>
+    <section id="tab-method" class="tabpane" hidden></section>
+  </main>
+</div>
+
+<div class="scrim" id="scrim" hidden></div>
+<aside class="drawer" id="drawer" aria-hidden="true" tabindex="-1"></aside>
+<div class="modal" id="modal" hidden></div>
+<div class="tooltip" id="tip" hidden></div>
+<div class="toast" id="toast" hidden></div>
+
+<script src="data.js"></script>
+<script src="vendor/xlsx.full.min.js"></script>
+<script src="engine.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
