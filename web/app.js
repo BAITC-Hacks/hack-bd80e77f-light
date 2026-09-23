@@ -176,6 +176,12 @@
   }
 
   // ---------------- KPIs ----------------
+  const ICON = {
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    alert: '<path d="M12 3l10 18H2z"/><path d="M12 10v4M12 17.5v.5"/>',
+    box: '<path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4M12 11v10"/>',
+    coin: '<circle cx="12" cy="12" r="9"/><path d="M9 9.5h4.5a2 2 0 010 4H10a2 2 0 000 4H15M12 7v2M12 17.5V19"/>',
+  };
   function renderKpis() {
     const base = baseRows();
     const today = base.filter(Engine.isOrderToday);
@@ -183,23 +189,32 @@
     const crit = base.filter((x) => x.r.urgency === "critical");
     const cov = Engine.priceCoverage(base);
     const cards = [
-      { label: "Заказать сегодня", dot: "var(--crit)", value: fmt(today.length), sub: "последний безопасный день наступил или прошёл", act: () => setFilter({ urg: "all", st: "all", win: "now", onlyOrder: true, sort: "action" }) },
-      { label: "Ожидаемый дефицит", dot: "var(--crit)", value: fmt(deficit.length), sub: "закончатся раньше, чем придёт заказ, размещённый сегодня", act: () => setFilter({ urg: "all", st: "all", win: null, onlyOrder: false, sort: "action", deficitOnly: true }) },
-      { label: "Критические позиции", dot: "var(--crit)", value: fmt(crit.length), sub: "запаса и товара в пути не хватит на срок поставки", act: () => setFilter({ urg: "critical", st: "all", win: null, onlyOrder: true }) },
-      { label: "Стоимость по известным ценам", value: cov.priced ? money(cov.value) : "Нет данных", sub: `по ${fmt(cov.priced)} из ${fmt(cov.lines)} строк заказа · сумма неполная`, warn: cov.missing > 0 },
-      { label: "Покрытие ценами", dot: cov.share != null && cov.share < 0.5 ? "var(--warn)" : null, value: pct(cov.share), sub: `у ${fmt(cov.missing)} позиций к заказу нет цены`, act: () => switchTab("method") },
+      { label: "Заказать сегодня", tone: "crit", ico: "clock", value: fmt(today.length), sub: "срок заказа наступил", act: () => setFilter({ urg: "all", st: "all", win: "now", onlyOrder: true, sort: "action" }) },
+      { label: "Ожидаемый дефицит", tone: "crit", ico: "alert", value: fmt(deficit.length), sub: "закончатся до прихода поставки", act: () => setFilter({ urg: "all", st: "all", win: null, onlyOrder: false, sort: "action", deficitOnly: true }) },
+      { label: "Критические позиции", tone: "warn", ico: "box", value: fmt(crit.length), sub: "не хватит на срок поставки", act: () => setFilter({ urg: "critical", st: "all", win: null, onlyOrder: true }) },
+      { label: "Стоимость заказа", tone: "plan", ico: "coin", value: cov.priced ? money(cov.value) : "Нет данных", sub: `неполная: цены у ${pct(cov.share)} позиций`, bar: cov.share, act: () => switchTab("method") },
     ];
     $("#kpis").innerHTML = cards.map((c, i) => `
-      <div class="kpi ${c.act ? "clickable" : ""}" data-i="${i}" ${c.act ? 'tabindex="0" role="button"' : ""}>
-        <div class="k-label">${c.dot ? `<span class="dot" style="background:${c.dot}"></span>` : ""}${c.label}</div>
+      <div class="kpi t-${c.tone} clickable" data-i="${i}" tabindex="0" role="button">
+        <div class="k-top"><div class="k-label">${c.label}</div><div class="k-ico"><svg viewBox="0 0 24 24">${ICON[c.ico]}</svg></div></div>
         <div class="k-value num">${c.value}</div>
         <div class="k-sub">${c.sub}</div>
+        ${c.bar != null ? `<div class="k-bar" title="Покрытие ценами"><i style="width:${Math.round(c.bar * 100)}%"></i></div>` : ""}
       </div>`).join("");
-    $$("#kpis .kpi.clickable").forEach((el) => {
+    $$("#kpis .kpi").forEach((el) => {
       el.addEventListener("click", () => cards[+el.dataset.i].act());
       el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); cards[+el.dataset.i].act(); } });
     });
+    const p = state.p;
+    $("#ctx").innerHTML = `<span class="c-item">Сценарий <b>${SCN[p.scenario].label}</b></span>
+      ${Object.entries(REAL_SUPS).map(([k, v]) => `<span class="c-item">${esc(v.name)} <b>${fmt(Math.round(p.lead[k] * 30))} дн</b></span>`).join("")}
+      <span class="c-item">Согласование <b>${p.buffer} дн</b></span>
+      ${p.growth ? `<span class="c-item">Прирост <b>${p.growth > 0 ? "+" : ""}${Math.round(p.growth * 100)}%</b></span>` : ""}
+      <button class="c-edit" id="ctxEdit">Изменить параметры</button>`;
+    $("#ctxEdit").onclick = openParams;
   }
+  function openParams() { $("#params").classList.add("open"); $("#paramsScrim").hidden = false; }
+  function closeParams() { $("#params").classList.remove("open"); $("#paramsScrim").hidden = true; }
 
   // ---------------- «Что делать сегодня» ----------------
   function reasonText(x) {
@@ -214,43 +229,94 @@
     if (r.transitNoEta) parts.push(`${fmt(r.transitNoEta)} шт в пути без даты`);
     return parts.join(" · ");
   }
+  const ST_COLOR = { now: "var(--crit)", overdue: "#ec835a", today: "var(--warn)", week: "#f5c451", later: "var(--good)", nodata: "var(--line-strong)" };
+  function donut(parts, total) {
+    const R = 86, r = 62, C = 90;
+    let a0 = -Math.PI / 2, out = "";
+    parts.filter((p) => p.v > 0).forEach((p) => {
+      const a1 = a0 + (p.v / total) * Math.PI * 2 - 0.02;
+      const large = a1 - a0 > Math.PI ? 1 : 0;
+      const pt = (rad, a) => `${(C + rad * Math.cos(a)).toFixed(2)},${(C + rad * Math.sin(a)).toFixed(2)}`;
+      out += `<path d="M${pt(R, a0)} A${R},${R} 0 ${large} 1 ${pt(R, a1)} L${pt(r, a1)} A${r},${r} 0 ${large} 0 ${pt(r, a0)} Z" fill="${p.c}" class="hit2" data-tip="${esc(`<b>${p.l}</b><br>${fmt(p.v)} позиций`)}"/>`;
+      a0 = a1 + 0.02;
+    });
+    return `<svg viewBox="0 0 180 180" role="img" aria-label="Статусы позиций к заказу">${out}
+      <text x="90" y="92" text-anchor="middle" font-size="24" font-weight="700" fill="var(--text)">${fmt(total)}</text>
+      <text x="90" y="110" text-anchor="middle" font-size="11" fill="var(--text-3)">к заказу</text></svg>`;
+  }
+  function weekBars(list) {
+    const weeks = 12, counts = new Array(weeks).fill(0);
+    list.forEach((x) => { const d = Math.max(0, x.r.safeDay); const w = Math.floor(d / 7); if (w < weeks) counts[w]++; });
+    const W = 560, H = 190, pl = 34, pb = 24, pt = 16, iw = W - pl - 6, ih = H - pb - pt, bw = iw / weeks;
+    const nice = niceMax(Math.max(1, ...counts));
+    let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Сколько заказов разместить по неделям">`;
+    [0, 0.5, 1].forEach((f) => { const yy = pt + ih - f * ih; svg += `<line x1="${pl}" x2="${W - 6}" y1="${yy}" y2="${yy}" stroke="var(--line)"/><text x="${pl - 6}" y="${yy + 3}" text-anchor="end" font-size="10" fill="var(--text-3)">${fmt(nice * f)}</text>`; });
+    counts.forEach((c, i) => {
+      const h = (c / nice) * ih, xx = pl + i * bw + 4, yy = pt + ih - h;
+      if (c) svg += `<path d="${roundTop(xx, yy, bw - 8, h, 4)}" fill="${i === 0 ? "var(--crit)" : i === 1 ? "var(--warn)" : "var(--series-1)"}"/><text x="${xx + (bw - 8) / 2}" y="${yy - 4}" text-anchor="middle" font-size="10" fill="var(--text-2)">${fmt(c)}</text>`;
+      svg += `<rect class="hit" x="${pl + i * bw}" y="${pt}" width="${bw}" height="${ih}" fill="transparent" data-tip="${esc(`<b>${i === 0 ? "Сейчас (срок наступил или наступает на этой неделе)" : `Неделя с ${dayDate(i * 7)}`}</b><br>${fmt(c)} позиций`)}"/>`;
+      if (i % 2 === 0) svg += `<text x="${pl + i * bw + bw / 2}" y="${H - 7}" text-anchor="middle" font-size="10" fill="var(--text-3)">${i === 0 ? "сейчас" : dayDate(i * 7)}</text>`;
+    });
+    return svg + "</svg>";
+  }
   function renderToday() {
     const base = baseRows();
-    const cov = Engine.priceCoverage(base);
-    const acts = base.filter((x) => x.final > 0 && ST[x.r.status].rank <= 3).sort(Engine.actionCompare);
+    const orders = base.filter((x) => x.final > 0);
+    const acts = orders.filter((x) => ST[x.r.status].rank <= 3).sort(Engine.actionCompare);
     const top = acts.slice(0, 10);
-    const sc = SCN[state.p.scenario];
-    const warn = cov.missing ? `<div class="banner"><svg viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v4M12 17.5v.5"/></svg>
-      <div>Цена известна только у <b>${pct(cov.share)}</b> позиций к заказу (${fmt(cov.priced)} из ${fmt(cov.lines)}). Количество рассчитано для всех, но полный бюджет заказа определить нельзя: стоимость <b>${cov.priced ? money(cov.value) : "—"}</b> — только по позициям с ценой.</div></div>` : "";
-    $("#tab-today").innerHTML = `${warn}
-      <div class="card">
-        <div style="display:flex;flex-wrap:wrap;gap:10px;justify-content:space-between;align-items:baseline">
-          <h3>Главные действия на сегодня</h3>
-          <span class="scen-tag">Сценарий: <b>${sc.label}</b></span>
-        </div>
-        <p class="c-desc">Порядок: просроченные и «дефицит сейчас» → самая ранняя дата окончания запаса → категория A → больший дефицит до прихода поставки. Отсутствие цены приоритет не снижает.</p>
-        ${top.length ? `<div class="table-wrap"><table class="actions-table">
-          <thead><tr><th>Статус</th><th>Товар</th><th class="hide-md">Поставщик</th><th class="r">Остаток</th><th class="r hide-md">Дней запаса</th><th>Закончится</th><th>Заказать до</th><th class="r">Заказ, шт</th><th class="hide-sm">Причина приоритета</th></tr></thead>
+    // 1. статусы
+    const order = ["now", "overdue", "today", "week", "later", "nodata"];
+    const parts = order.map((k) => ({ k, l: ST[k].label, v: orders.filter((x) => x.r.status === k).length, c: ST_COLOR[k] }));
+    // 2. поставщики
+    const supRows = Object.keys(REAL_SUPS).filter((k) => state.sup === "all" || k === state.sup).map((k) => {
+      const l = orders.filter((x) => x.s.sup === k);
+      const crit = l.filter((x) => x.r.urgency === "critical").length;
+      const cov = Engine.priceCoverage(l);
+      return { k, n: l.length, crit, units: l.reduce((a, x) => a + x.final, 0), cov };
+    });
+    const supMax = Math.max(1, ...supRows.map((x) => x.n));
+    // 3. группы
+    const groups = {};
+    orders.forEach((x) => { const g = (groups[x.s.g] ||= { crit: 0, other: 0 }); x.r.urgency === "critical" ? g.crit++ : g.other++; });
+    const gl = Object.entries(groups).sort((a, b) => b[1].crit + b[1].other - (a[1].crit + a[1].other)).slice(0, 7);
+    const gmax = Math.max(1, ...gl.map(([, g]) => g.crit + g.other));
+    const legendCrit = `<div class="legend"><span><i style="width:10px;height:10px;background:var(--crit);border-radius:2px"></i>Критичные</span><span><i style="width:10px;height:10px;background:var(--series-1);border-radius:2px"></i>Остальные к заказу</span></div>`;
+    $("#tab-today").innerHTML = `<div class="dash">
+      <div class="card"><h3>Статус позиций к заказу</h3><p class="c-desc">Когда нужно действовать · нажмите, чтобы открыть список</p>
+        <div class="donut-wrap">${donut(parts, orders.length || 1)}
+          <div class="dlegend">${parts.map((p) => `<button data-st="${p.k}"><i style="background:${p.c}"></i><span>${p.l}</span><b>${fmt(p.v)}</b></button>`).join("")}</div>
+        </div></div>
+      <div class="card"><h3>Когда размещать заказы</h3><p class="c-desc">Позиций по неделям до последнего безопасного дня</p>
+        <div class="chart">${weekBars(orders.filter((x) => x.r.safeDay != null))}</div></div>
+      <div class="card"><h3>Поставщики</h3><p class="c-desc">Позиций к заказу и сколько из них критичных</p>
+        <div class="sup-bars">${supRows.map((x) => `<div class="sup-bar" data-tip="${esc(`<b>${REAL_SUPS[x.k].name}</b><br>К заказу: ${fmt(x.n)}<br>Критичных: ${fmt(x.crit)}<br>Штук: ${fmt(x.units)}`)}">
+          <div class="sb-top"><b>${esc(REAL_SUPS[x.k].name)}</b><span class="num"><b>${fmt(x.n)}</b> поз.</span></div>
+          <div class="sb-track" style="width:${Math.max(4, (x.n / supMax) * 100)}%"><i style="width:${x.n ? (x.crit / x.n) * 100 : 0}%;background:var(--crit)"></i><i style="flex:1;background:var(--series-1)"></i></div>
+          <div class="sb-sub">${fmt(x.crit)} критичных · ${fmt(x.units)} шт · ${x.cov.priced ? `${money(x.cov.value)} по известным ценам` : "цен нет"}</div></div>`).join("")}</div>
+        ${legendCrit}</div>
+      <div class="card"><h3>Группы товаров</h3><p class="c-desc">Где больше всего позиций к заказу</p>
+        ${gl.map(([name, g]) => `<div class="hbar" data-tip="${esc(`<b>${name}</b><br>Критичных: ${g.crit}<br>Остальных: ${g.other}`)}"><span>${esc(name)}</span>
+          <div class="track">${g.crit ? `<i style="width:${(g.crit / gmax) * 100}%;background:var(--crit)"></i>` : ""}${g.other ? `<i style="width:${(g.other / gmax) * 100}%;background:var(--series-1)"></i>` : ""}</div>
+          <span class="v">${fmt(g.crit + g.other)}</span></div>`).join("")}
+        ${legendCrit}</div>
+      <div class="card wide"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline"><h3>10 главных действий</h3><button class="btn sm" id="allActs">Все действия · ${fmt(acts.length)}</button></div>
+        <p class="c-desc">Сначала просроченные и «дефицит сейчас», затем по дате окончания запаса</p>
+        ${top.length ? `<div class="table-wrap"><table class="acts">
+          <thead><tr><th>Статус</th><th>Товар</th><th class="r">Остаток</th><th>Закончится</th><th>Заказать до</th><th class="r">Заказ, шт</th></tr></thead>
           <tbody>${top.map((x) => `<tr data-id="${esc(x.s.id)}" tabindex="0">
             <td>${statusPill(x.r.status)}</td>
-            <td><div class="p-name">${esc(x.s.n)}</div><div class="p-meta"><span>${esc(x.s.id)}</span><span class="abc">${x.s.abc}</span></div></td>
-            <td class="hide-md">${esc(SUPS[x.s.sup].name)}</td>
+            <td><div class="p-name">${esc(x.s.n)}</div><div class="why">${esc(SUPS[x.s.sup].name)} · ${x.r.status === "now" ? "товара нет" : x.r.status === "overdue" ? `срок прошёл ${fmt(-x.r.safeDay)} дн назад` : ST[x.r.status].label.toLowerCase()}${x.r.expectedDeficit && x.r.deficitLead >= 1 ? ` · до прихода не хватит ≈ ${fmt(x.r.deficitLead)} шт` : ""}</div></td>
             <td class="r num">${fmt(x.r.stock)}</td>
-            <td class="r num hide-md">${x.r.stockoutDay == null ? "> 180" : fmt(x.r.stockoutDay)}</td>
             <td class="num">${fDay(x.r.stockoutDay)}</td>
             <td class="num"><b>${x.r.safeDay == null ? NA : x.r.status === "now" ? '<span style="color:var(--crit)">немедленно</span>' : x.r.safeDay < 0 ? `<span style="color:var(--crit)">просрочено ${fmt(-x.r.safeDay)} дн</span>` : x.r.safeDay === 0 ? "сегодня" : Engine.fmtDay(x.r.safeDay)}</b></td>
-            <td class="r num"><b>${fmt(x.final)}</b>${x.r.moq > 1 ? `<div class="rec-hint">кратно ${fmt(x.r.moq)}</div>` : ""}</td>
-            <td class="reason hide-sm">${esc(reasonText(x))}</td>
-          </tr>`).join("")}</tbody></table></div>
-          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">
-            <button class="btn primary" id="allActs">Все действия (${fmt(acts.length)})</button>
-            <button class="btn" id="goCal">Календарь заказов</button>
-          </div>`
-        : `<div class="empty">Срочных действий нет: по всем позициям безопасный день заказа дальше чем через неделю.</div>`}
-      </div>`;
+            <td class="r num"><b>${fmt(x.final)}</b></td>
+          </tr>`).join("")}</tbody></table></div>` : `<div class="empty">Срочных действий нет.</div>`}
+      </div></div>`;
     bindRows($("#tab-today"));
+    bindTips($("#tab-today"));
+    $$("#tab-today .hit2").forEach((h) => { h.addEventListener("mousemove", (e) => { const t = $("#tip"); t.innerHTML = h.dataset.tip; t.hidden = false; t.style.left = e.clientX + 14 + "px"; t.style.top = e.clientY + 14 + "px"; }); h.addEventListener("mouseleave", () => ($("#tip").hidden = true)); });
+    $$("#tab-today [data-st]").forEach((b) => (b.onclick = () => setFilter({ urg: "all", st: b.dataset.st, win: null, onlyOrder: true, sort: "action" })));
     $("#allActs")?.addEventListener("click", () => setFilter({ urg: "all", st: "all", win: null, onlyOrder: true, sort: "action" }));
-    $("#goCal")?.addEventListener("click", () => switchTab("calendar"));
   }
   function bindRows(root) {
     $$("tr[data-id]", root).forEach((tr) => {
@@ -1434,9 +1500,11 @@
     $("#onlyOrder").addEventListener("change", (e) => { state.onlyOrder = e.target.checked; if (state.onlyOrder && state.urg === "ok") state.urg = "all"; render(); });
     $$(".tab").forEach((b) => b.addEventListener("click", () => switchTab(b.dataset.tab)));
     $("#exportBtn").addEventListener("click", () => { exportXlsx(); toast("Excel сформирован. Поставщику ничего не отправлено"); });
-    $("#paramsToggle").addEventListener("click", () => $("#params").classList.toggle("open"));
+    $("#paramsToggle").addEventListener("click", openParams);
+    $("#paramsClose").addEventListener("click", closeParams);
+    $("#paramsScrim").addEventListener("click", closeParams);
     $("#scrim").addEventListener("click", closeDrawer);
-    document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeDrawer(); $("#modal").hidden = true; } });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeDrawer(); closeParams(); $("#modal").hidden = true; } });
     render();
     // прямые ссылки: #tab=analytics, #sku=<код 1С>
     const h = new URLSearchParams(location.hash.slice(1));
