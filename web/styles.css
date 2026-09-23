@@ -580,3 +580,5 @@ a.btn { text-decoration: none; }
 .os-mini div:first-child { border-top: 0; }
 .os-preview { margin: 0; white-space: pre-wrap; font: 13px/1.5 var(--font); background: var(--good-soft); border-radius: 10px; padding: 12px 14px; max-height: 260px; overflow-y: auto; color: var(--text); }
 @media (max-width: 600px) { .os-bar { padding-left: 16px; padding-right: 16px; } .os-bar .send-row { margin-left: 0 !important; width: 100%; } .os-bar #osNext { width: 100%; justify-content: center; } }
+.c-sel select { border: 0; background: transparent; font: inherit; font-weight: 600; color: var(--text); padding: 0 2px; max-width: 190px; cursor: pointer; }
+.c-sel select:focus { outline: none; }

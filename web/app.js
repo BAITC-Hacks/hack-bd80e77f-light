@@ -73,7 +73,8 @@
     });
     state.alloc = state.budget > 0 ? Engine.allocateBudget(baseRows(), state.budget) : null;
   }
-  const baseRows = () => rows.filter(({ s }) => state.sup === "all" || s.sup === state.sup);
+  // выбор поставщика и группы товаров (категории) пересчитывает весь дашборд — сценарий ТЗ «расчёт по складу или категории»
+  const baseRows = () => rows.filter(({ s }) => (state.sup === "all" || s.sup === state.sup) && (state.group === "all" || s.g === state.group));
 
   // ---------------- params panel ----------------
   const TOGGLES = [
@@ -214,9 +215,12 @@
     $("#ctx").innerHTML = `<span class="c-item">Сценарий <b>${SCN[p.scenario].label}</b></span>
       ${Object.entries(REAL_SUPS).map(([k, v]) => `<span class="c-item">${esc(v.name)} <b>${fmt(Math.round(p.lead[k] * 30))} дн</b></span>`).join("")}
       <span class="c-item">Согласование <b>${p.buffer} дн</b></span>
+      <label class="c-item c-sel" title="В выгрузке партнёра один склад — Алматы; у Systeme Electric в карточке товара видна разбивка по складам">Склад <select id="ctxWh" aria-label="Склад"><option>Алматы (все склады)</option></select></label>
+      <label class="c-item c-sel">Категория <select id="ctxGroup" aria-label="Группа товаров"><option value="all">Все группы</option>${[...new Set(rows.filter((x) => state.sup === "all" || x.s.sup === state.sup).map((x) => x.s.g))].sort((a, b) => a.localeCompare(b, "ru")).map((g) => `<option ${state.group === g ? "selected" : ""}>${esc(g)}</option>`).join("")}</select></label>
       ${p.growth ? `<span class="c-item">Прирост <b>${p.growth > 0 ? "+" : ""}${Math.round(p.growth * 100)}%</b></span>` : ""}
       <button class="c-edit" id="ctxEdit">Изменить параметры</button>`;
     $("#ctxEdit").onclick = openParams;
+    $("#ctxGroup").onchange = (e) => { state.group = e.target.value; renderGroupSel(); recompute(); render(); };
   }
   function openParams() { $("#params").classList.add("open"); $("#paramsScrim").hidden = false; document.body.classList.add("lock"); $("#params").scrollTop = 0; }
   function closeParams() { $("#params").classList.remove("open"); $("#paramsScrim").hidden = true; document.body.classList.remove("lock"); }
@@ -279,7 +283,7 @@
   /** Кандидаты в заказ: рекомендованные в выбранном наборе + добавленные вручную. */
   function orderCandidates(k, scope) {
     const pk = pickOf(k);
-    const base = rows.filter((x) => x.s.sup === k && SCOPES[scope][2](x));
+    const base = rows.filter((x) => x.s.sup === k && (state.group === "all" || x.s.g === state.group) && SCOPES[scope][2](x));
     const ids = new Set(base.map((x) => x.s.id));
     const added = pk.add.map((id) => rows.find((x) => x.s.id === id)).filter((x) => x && !ids.has(x.s.id));
     return [...base.sort(Engine.actionCompare), ...added].map((x) => ({ ...x, on: !pk.off.includes(x.s.id), manual: !ids.has(x.s.id) }));
@@ -431,6 +435,7 @@
         <button class="btn share" data-send="mail">Почта</button>
         ${navigator.canShare ? `<button class="btn share" data-send="file">Поделиться файлом</button>` : ""}
         <button class="btn share" id="osXls">Excel</button>
+        <button class="btn share" id="osCsv" title="CSV для загрузки в 1С: код 1С, артикул, наименование, количество, цена">Для 1С (CSV)</button>
       </div>`;
     $("#osBack").onclick = () => {
       if (state.approved[k]) { delete state.approved[k]; store.set("approved", state.approved); render(); }
@@ -444,6 +449,7 @@
     };
     const xls = (a = state.approved[k]) => XLSX.writeFile(buildWorkbook([k], () => lines, a ? `Согласовано ${a.at}, отправляет менеджер` : null), orderFile(k));
     $("#osXls").onclick = () => { xls(); toast("Excel скачан"); };
+    $("#osCsv").onclick = () => { csv1c(k, lines); toast("CSV для 1С скачан"); };
     $$("[data-send]").forEach((b) => (b.onclick = async (e) => {
       const kind = b.dataset.send;
       const a = approve();
@@ -495,7 +501,7 @@
       const pk = pickOf(k);
       const edited = pk.off.length || pk.add.length;
       return `<div class="order-card">
-        <div class="oc-name"><div class="oc-sup">${esc(REAL_SUPS[k].name)}</div><div class="muted">на сегодня${edited ? " · изменён" : ""} · всего ${fmt(all.length)}</div></div>
+        <div class="oc-name"><div class="oc-sup">${esc(REAL_SUPS[k].name)}</div><div class="muted">на сегодня${state.group !== "all" ? ` · ${esc(state.group)}` : ""}${edited ? " · изменён" : ""} · всего ${fmt(all.length)}</div></div>
         <div class="oc-nums"><div><b class="num">${fmt(lines.length)}</b><span>поз.</span></div><div><b class="num">${fmt(lines.reduce((a, x) => a + x.final, 0))}</b><span>шт</span></div><div><b class="num">${cov.priced ? money(cov.value) : "—"}</b><span>${cov.priced ? (cov.missing ? "изв. цены" : "сумма") : "цен нет"}</span></div></div>
         ${ap ? `<span class="approved-badge"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg>${esc(ap.at)}</span>` : ""}
         <div class="oc-actions">
@@ -805,6 +811,20 @@
     wsInfo["!cols"] = [{ wch: 34 }, { wch: 110 }];
     XLSX.utils.book_append_sheet(wb, wsInfo, "Параметры");
     return wb;
+  }
+  /** Выгрузка для загрузки в 1С: CSV с разделителем «;», UTF-8 с BOM (открывается в Excel и загружается
+   *  обработкой 1С «Загрузка из табличного документа»). Коды 1С и артикулы — как текст. */
+  function csv1c(k, lines) {
+    const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const head = ["Код 1С", "Артикул", "Наименование", "Количество", "Ед.", "Цена", "Сумма", "Поставщик"];
+    const body = lines.map((x) => [x.s.id, x.s.art || "", x.s.n, x.final, "шт",
+      Engine.hasPrice(x.s) ? String(x.s.pr).replace(".", ",") : "", Engine.hasPrice(x.s) ? String(Math.round(x.final * x.s.pr * 100) / 100).replace(".", ",") : "", SUPS[k].name]);
+    const text = "\ufeff" + [head, ...body].map((r) => r.map(q).join(";")).join("\r\n");
+    const url = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8" }));
+    const a = document.createElement("a");
+    a.href = url; a.download = `Заказ_${SUPS[k].name.replace(/\s+/g, "_")}_${META.asOf}_для_1С.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
   }
   function exportXlsx(keys = Object.keys(REAL_SUPS).filter((k) => state.sup === "all" || k === state.sup)) {
     if (!window.XLSX) { toast("Библиотека Excel не загрузилась"); return; }
@@ -1769,7 +1789,7 @@
     renderGroupSel();
     let qTimer;
     $("#q").addEventListener("input", (e) => { clearTimeout(qTimer); qTimer = setTimeout(() => { state.q = e.target.value; if (state.tab !== "orders") switchTab("orders"); else render(); }, 120); });
-    $("#groupSel").addEventListener("change", (e) => { state.group = e.target.value; render(); });
+    $("#groupSel").addEventListener("change", (e) => { state.group = e.target.value; recompute(); render(); });
     $("#abcSel").addEventListener("change", (e) => { state.abc = e.target.value; render(); });
     $("#statusSel").addEventListener("change", (e) => { state.st = e.target.value; render(); });
     $("#sortSel").value = state.sort;

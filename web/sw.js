@@ -2,7 +2,7 @@
  * При первом открытии сохраняет все файлы сервиса в браузере; дальше сервис открывается
  * и считает без интернета. При наличии сети всегда берёт свежую версию (сначала сеть,
  * затем кэш), поэтому обновления данных видны сразу. */
-const VERSION = "umny-zakup-v10";
+const VERSION = "umny-zakup-v11";
 const CORE = ["./", "index.html", "styles.css", "app.js", "engine.js", "coverage.js", "assumptions.js", "data.js", "vendor/xlsx.full.min.js", "manifest.webmanifest", "icon.svg"];
 
 self.addEventListener("install", (e) => {
