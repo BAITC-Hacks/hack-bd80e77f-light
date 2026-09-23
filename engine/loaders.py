@@ -90,7 +90,10 @@ def _read_lines(path: Path) -> pd.DataFrame:
     out = (d.groupby(["Номер", "code"], as_index=False)
              .agg(date=("date", "min"), qty=("qty", "sum"))
              .rename(columns={"Номер": "doc"}))
-    return out[out["qty"] > 0]
+    # отрицательные строки — возвраты: в спрос не идут, но считаются для блока «Качество данных»
+    res = out[out["qty"] > 0].copy()
+    res.attrs["returns"] = out[out["qty"] < 0].groupby("code").size()
+    return res
 
 
 def _read_season(path: Path, sheet=0) -> np.ndarray:
@@ -154,6 +157,7 @@ def load_iek() -> SupplierData:
     skus["name"] = names.reindex(codes).fillna(names2.reindex(codes))
     skus["article"] = arts.reindex(codes)
     skus["moq"] = moq.reindex(codes).fillna(1)
+    skus["moq_known"] = codes.isin(moq.index)
     skus["price"] = np.nan                     # в выгрузке IEK нет себестоимости
     skus["partner_cat"] = None
     months = _period_range(set(sales.columns) | set(stock.columns))
@@ -186,6 +190,7 @@ def load_se() -> SupplierData:
     skus["name"] = names.reindex(codes).fillna(names2.reindex(codes))
     skus["article"] = tr["Артикул поставщика"].astype(str).reindex(codes)
     skus["moq"] = moq.reindex(codes).fillna(1)
+    skus["moq_known"] = codes.isin(moq.index)
     skus["price"] = pd.to_numeric(tr["СС реал"], errors="coerce").reindex(codes)
     skus["partner_cat"] = tr["Категория 2026"].astype(str).reindex(codes)
     skus["stock_now"] = pd.to_numeric(tr["Свободный остаток"], errors="coerce").reindex(codes)

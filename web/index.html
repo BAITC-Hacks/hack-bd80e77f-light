@@ -37,8 +37,18 @@
 <div class="layout">
   <aside class="params" id="params">
     <section>
+      <h3>Сценарий</h3>
+      <div class="seg seg-full" id="scenSeg" role="radiogroup" aria-label="Сценарий"></div>
+      <p class="hint scen-note" id="scenNote"></p>
+    </section>
+    <section>
       <h3>Параметры расчёта</h3>
       <div class="field" id="leadFields"></div>
+      <div class="field">
+        <label for="buffer">Согласование заказа <b id="bufferVal"></b></label>
+        <input type="range" id="buffer" min="0" max="10" step="1">
+        <small>дни внутри компании до отправки заказа</small>
+      </div>
       <div class="field">
         <label for="review">Период пересмотра <b id="reviewVal"></b></label>
         <input type="range" id="review" min="0.5" max="3" step="0.5">
@@ -50,11 +60,11 @@
         <small>ручная поправка поверх тренда</small>
       </div>
     </section>
-    <section>
-      <h3>Что учитывает алгоритм</h3>
+    <details class="expert" id="expert">
+      <summary>Методика · экспертный режим</summary>
       <p class="hint">Выключите фактор — и сразу увидите, как он меняет заказ.</p>
       <div id="toggles"></div>
-    </section>
+    </details>
     <section class="note">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/></svg>
       <div>Заказ <b>не отправляется</b> поставщику автоматически: только после утверждения менеджером. Данные клиентов в расчёте не используются.</div>
@@ -64,16 +74,28 @@
   <main>
     <div class="kpis" id="kpis"></div>
     <nav class="tabs" role="tablist">
-      <button class="tab active" data-tab="orders">Заказ поставщикам</button>
+      <button class="tab active" data-tab="today">Что делать сегодня</button>
+      <button class="tab" data-tab="orders">Заказ поставщикам</button>
       <button class="tab" data-tab="calendar">Календарь заказов</button>
+      <button class="tab" data-tab="scenarios">Сценарии и бюджет</button>
       <button class="tab" data-tab="analytics">Аналитика</button>
-      <button class="tab" data-tab="method">Как это работает</button>
+      <button class="tab" data-tab="method">Методика и данные</button>
     </nav>
 
-    <section id="tab-orders" class="tabpane">
+    <section id="tab-today" class="tabpane"><div class="empty">Загрузка данных…</div></section>
+    <section id="tab-orders" class="tabpane" hidden>
       <div class="filters">
         <div class="chips" id="urgChips"></div>
         <select id="groupSel" aria-label="Группа товаров"></select>
+        <select id="statusSel" aria-label="Статус заказа">
+          <option value="all">Все статусы</option>
+          <option value="now">Дефицит сейчас</option>
+          <option value="overdue">Просрочено</option>
+          <option value="today">Сегодня</option>
+          <option value="week">На этой неделе</option>
+          <option value="later">Позже</option>
+          <option value="nodata">Недостаточно данных</option>
+        </select>
         <select id="abcSel" aria-label="Категория ABC">
           <option value="all">Все категории</option>
           <option value="A">A — частый спрос</option>
@@ -81,6 +103,7 @@
           <option value="C">C — редкий</option>
         </select>
         <select id="sortSel" aria-label="Сортировка">
+          <option value="action">По приоритету действий</option>
           <option value="urgency">Сначала срочные</option>
           <option value="orderBy">По дате «заказать до»</option>
           <option value="value">По сумме заказа</option>
@@ -93,6 +116,7 @@
     </section>
 
     <section id="tab-calendar" class="tabpane" hidden></section>
+    <section id="tab-scenarios" class="tabpane" hidden></section>
     <section id="tab-analytics" class="tabpane" hidden></section>
     <section id="tab-method" class="tabpane" hidden></section>
   </main>

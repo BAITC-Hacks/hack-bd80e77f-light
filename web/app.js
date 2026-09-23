@@ -28,6 +28,18 @@
   };
   const URG_ORDER = { critical: 0, soon: 1, planned: 2, ok: 3 };
   const pill = (u) => `<span class="pill ${u}"><svg viewBox="0 0 24 24">${URG[u].icon}</svg>${URG[u].label}</span>`;
+  const ST = Engine.STATUS;
+  const ST_ICON = {
+    crit: '<path d="M12 8v5M12 16.5v.5"/><circle cx="12" cy="12" r="9"/>',
+    warn: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    good: '<path d="M5 12l5 5 9-10"/>',
+    none: '<circle cx="12" cy="12" r="9"/><path d="M8.5 12h7"/>',
+  };
+  const statusPill = (st) => `<span class="pill st-${ST[st].tone}"><svg viewBox="0 0 24 24">${ST_ICON[ST[st].tone]}</svg>${ST[st].label}</span>`;
+  const NA = '<span class="na">Нет данных</span>';
+  const fDay = (i) => (i == null ? NA : Engine.fmtDay(i));
+  const SCN = Engine.SC;
+  const pct = (x) => (x == null ? "Нет данных" : `${fmt(x * 100, x < 0.1 && x > 0 ? 1 : 0)}%`);
 
   // ---------------- state ----------------
   const store = {
@@ -37,9 +49,11 @@
   const defaults = {
     lead: Object.fromEntries(Object.entries(SUPS).map(([k, v]) => [k, v.lead])),
     review: 1, growth: 0, oneoff: true, restore: true, season: true, trend: true, transit: true,
+    scenario: "base", buffer: META.buffer,
   };
   const state = {
-    sup: "all", q: "", urg: "all", group: "all", abc: "all", sort: "urgency", onlyOrder: true, tab: "orders", win: null,
+    sup: "all", q: "", urg: "all", st: "all", group: "all", abc: "all", sort: "action", onlyOrder: true, tab: "today", win: null,
+    budget: store.get("budget", null), alloc: null,
     p: { ...defaults, ...store.get("params", {}) },
     overrides: store.get("overrides", {}),
     approved: store.get("approved", {}),
@@ -52,9 +66,11 @@
       const r = Engine.calc(s, state.p);
       const ov = state.overrides[s.id];
       const final = ov != null ? ov : r.qty;
-      return { s, r, final, value: s.pr ? final * s.pr : 0 };
+      return { s, r, final, value: Engine.hasPrice(s) ? final * s.pr : 0 };
     });
+    state.alloc = state.budget > 0 ? Engine.allocateBudget(baseRows(), state.budget) : null;
   }
+  const baseRows = () => rows.filter(({ s }) => state.sup === "all" || s.sup === state.sup);
 
   // ---------------- params panel ----------------
   const TOGGLES = [
@@ -75,10 +91,14 @@
       el.value = state.p.lead[el.dataset.sup];
       el.addEventListener("input", () => { state.p.lead[el.dataset.sup] = +el.value; onParams(); });
     });
+    $("#scenSeg").innerHTML = Object.entries(SCN).map(([k, v]) => `<button role="radio" aria-checked="${state.p.scenario === k}" class="${state.p.scenario === k ? "active" : ""}" data-sc="${k}">${v.label}</button>`).join("");
+    $$("#scenSeg button").forEach((b) => (b.onclick = () => setScenario(b.dataset.sc)));
+    $("#buffer").value = state.p.buffer;
+    $("#buffer").oninput = (e) => { state.p.buffer = +e.target.value; onParams(); };
     $("#review").value = state.p.review;
     $("#growth").value = Math.round(state.p.growth * 100);
-    $("#review").addEventListener("input", (e) => { state.p.review = +e.target.value; onParams(); });
-    $("#growth").addEventListener("input", (e) => { state.p.growth = +e.target.value / 100; onParams(); });
+    $("#review").oninput = (e) => { state.p.review = +e.target.value; onParams(); };
+    $("#growth").oninput = (e) => { state.p.growth = +e.target.value / 100; onParams(); };
     $("#toggles").innerHTML = TOGGLES.map(([k, t, sub]) => `
       <label class="toggle">
         <span class="t-text"><span class="t-title">${t}</span><br><span class="t-sub">${sub}</span></span>
@@ -97,7 +117,11 @@
     $("#reviewVal").textContent = months(state.p.review);
     const g = Math.round(state.p.growth * 100);
     $("#growthVal").textContent = (g > 0 ? "+" : "") + g + "%";
+    $("#bufferVal").textContent = `${state.p.buffer} дн`;
+    $("#scenNote").innerHTML = `<b>${SCN[state.p.scenario].label}:</b> ${esc(SCN[state.p.scenario].note)}. <span class="muted">Демонстрационные допущения, а не вероятности.</span>`;
+    $$("#scenSeg button").forEach((b) => { const on = b.dataset.sc === state.p.scenario; b.classList.toggle("active", on); b.setAttribute("aria-checked", on); });
   }
+  function setScenario(k) { state.p.scenario = k; onParams(); }
   let paramTimer;
   function onParams() {
     paramLabels();
@@ -114,6 +138,8 @@
       if (state.group !== "all" && s.g !== state.group) return false;
       if (state.abc !== "all" && s.abc !== state.abc) return false;
       if (!ignoreUrg && state.urg !== "all" && r.urgency !== state.urg) return false;
+      if (state.st !== "all" && r.status !== state.st) return false;
+      if (state.deficitOnly && !r.expectedDeficit) return false;
       if (state.win && !WINDOWS.find((w) => w.k === state.win).test(r.orderByDay)) return false;
       if (state.onlyOrder && !(final > 0) && !(state.urg === "ok")) return false;
       if (q && !(`${s.n} ${s.id} ${s.art || ""}`.toLowerCase().includes(q))) return false;
@@ -122,6 +148,7 @@
   }
   function sorted(list) {
     const by = {
+      action: Engine.actionCompare,
       urgency: (a, b) => URG_ORDER[a.r.urgency] - URG_ORDER[b.r.urgency] || a.s.abc.localeCompare(b.s.abc) || b.r.monthly - a.r.monthly,
       value: (a, b) => b.value - a.value || b.final - a.final,
       qty: (a, b) => b.final - a.final,
@@ -133,37 +160,94 @@
 
   // ---------------- KPIs ----------------
   function renderKpis() {
-    const base = rows.filter(({ s }) => state.sup === "all" || s.sup === state.sup);
-    const toOrder = base.filter((x) => x.final > 0);
+    const base = baseRows();
+    const today = base.filter((x) => x.r.safeDay != null && x.r.safeDay <= 0);
+    const deficit = base.filter((x) => x.r.expectedDeficit);
     const crit = base.filter((x) => x.r.urgency === "critical");
-    const today = base.filter((x) => x.final > 0 && x.r.orderByDay != null && x.r.orderByDay <= 0);
-    const priced = toOrder.filter((x) => x.s.pr);
-    const value = priced.reduce((a, x) => a + x.value, 0);
-    const excess = base.filter((x) => x.r.excess > 0 && x.r.level >= 0);
-    const excessVal = excess.reduce((a, x) => a + (x.s.pr ? x.r.excess * x.s.pr : 0), 0);
-    const oneoffDocs = base.reduce((a, x) => a + x.s.oo.length, 0);
-    const oneoffQty = base.reduce((a, x) => a + x.r.oneoffQty, 0);
-    const lost = base.reduce((a, x) => a + Math.max(0, x.r.lost), 0);
-    const lostVal = base.reduce((a, x) => a + (x.s.pr ? Math.max(0, x.r.lost) * x.s.pr : 0), 0);
+    const cov = Engine.priceCoverage(base);
     const cards = [
-      { label: "Позиций к заказу", value: fmt(toOrder.length), sub: `из ${fmt(base.length)} активных артикулов`, act: () => setFilter({ urg: "all", win: null, onlyOrder: true }) },
-      { label: "Сумма заказа", value: value ? money(value) : "—", sub: priced.length < toOrder.length ? `по ${fmt(priced.length)} позициям с ценой (SE)` : "по себестоимости" },
-      { label: "Заказать сегодня", dot: "var(--crit)", value: fmt(today.length), sub: `из них ${fmt(crit.length)} закончатся до прихода поставки`, act: () => setFilter({ urg: "all", win: "now", onlyOrder: true }) },
-      { label: "Излишки на складе", dot: "var(--warn)", value: fmt(excess.length), sub: excessVal ? `${money(excessVal)} заморожено (запас > 6 мес)` : "запас больше чем на 6 мес" },
-      { label: "Разовые заказы исключены", value: fmt(oneoffDocs), sub: `${fmt(oneoffQty)} шт не раздувают закупку` },
-      { label: "Упущенный спрос учтён", value: `+${fmt(lost)}`, sub: lostVal ? `шт за 12 мес · ≈ ${money(lostVal)} продаж` : "шт за 12 мес при отсутствии товара" },
+      { label: "Заказать сегодня", dot: "var(--crit)", value: fmt(today.length), sub: "последний безопасный день наступил или прошёл", act: () => setFilter({ urg: "all", st: "all", win: "now", onlyOrder: false, sort: "action" }) },
+      { label: "Ожидаемый дефицит", dot: "var(--crit)", value: fmt(deficit.length), sub: "закончатся раньше, чем придёт заказ, размещённый сегодня", act: () => setFilter({ urg: "all", st: "all", win: null, onlyOrder: false, sort: "action", deficitOnly: true }) },
+      { label: "Критические позиции", dot: "var(--crit)", value: fmt(crit.length), sub: "запаса и товара в пути не хватит на срок поставки", act: () => setFilter({ urg: "critical", st: "all", win: null, onlyOrder: true }) },
+      { label: "Стоимость по известным ценам", value: cov.priced ? money(cov.value) : "Нет данных", sub: `по ${fmt(cov.priced)} из ${fmt(cov.lines)} строк заказа · сумма неполная`, warn: cov.missing > 0 },
+      { label: "Покрытие ценами", dot: cov.share != null && cov.share < 0.5 ? "var(--warn)" : null, value: pct(cov.share), sub: `у ${fmt(cov.missing)} позиций к заказу нет цены`, act: () => switchTab("method") },
     ];
     $("#kpis").innerHTML = cards.map((c, i) => `
-      <div class="kpi ${c.act ? "clickable" : ""}" data-i="${i}">
+      <div class="kpi ${c.act ? "clickable" : ""}" data-i="${i}" ${c.act ? 'tabindex="0" role="button"' : ""}>
         <div class="k-label">${c.dot ? `<span class="dot" style="background:${c.dot}"></span>` : ""}${c.label}</div>
         <div class="k-value num">${c.value}</div>
         <div class="k-sub">${c.sub}</div>
       </div>`).join("");
-    $$("#kpis .kpi.clickable").forEach((el) => el.addEventListener("click", () => cards[+el.dataset.i].act()));
+    $$("#kpis .kpi.clickable").forEach((el) => {
+      el.addEventListener("click", () => cards[+el.dataset.i].act());
+      el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); cards[+el.dataset.i].act(); } });
+    });
   }
+
+  // ---------------- «Что делать сегодня» ----------------
+  function reasonText(x) {
+    const { s, r } = x;
+    const parts = [];
+    if (r.status === "now") parts.push(`товара нет, спрос ${fmt(r.monthly)} шт/мес`);
+    else if (r.status === "overdue") parts.push(`срок заказа прошёл ${fmt(-r.safeDay)} дн назад`);
+    else if (r.status === "today") parts.push("сегодня последний безопасный день");
+    else if (r.status === "week") parts.push(`безопасный день через ${fmt(r.safeDay)} дн`);
+    if (r.expectedDeficit && r.deficitLead >= 1) parts.push(`до прихода поставки не хватит ≈ ${fmt(r.deficitLead)} шт`);
+    if (s.abc === "A") parts.push("частый спрос (A)");
+    if (r.transitNoEta) parts.push(`${fmt(r.transitNoEta)} шт в пути без даты`);
+    return parts.join(" · ");
+  }
+  function renderToday() {
+    const base = baseRows();
+    const cov = Engine.priceCoverage(base);
+    const acts = base.filter((x) => x.final > 0 && ST[x.r.status].rank <= 3).sort(Engine.actionCompare);
+    const top = acts.slice(0, 10);
+    const sc = SCN[state.p.scenario];
+    const warn = cov.missing ? `<div class="banner"><svg viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v4M12 17.5v.5"/></svg>
+      <div>Цена известна только у <b>${pct(cov.share)}</b> позиций к заказу (${fmt(cov.priced)} из ${fmt(cov.lines)}). Количество рассчитано для всех, но полный бюджет заказа определить нельзя: стоимость <b>${cov.priced ? money(cov.value) : "—"}</b> — только по позициям с ценой.</div></div>` : "";
+    $("#tab-today").innerHTML = `${warn}
+      <div class="card">
+        <div style="display:flex;flex-wrap:wrap;gap:10px;justify-content:space-between;align-items:baseline">
+          <h3>Главные действия на сегодня</h3>
+          <span class="scen-tag">Сценарий: <b>${sc.label}</b></span>
+        </div>
+        <p class="c-desc">Порядок: просроченные и «дефицит сейчас» → самая ранняя дата окончания запаса → категория A → больший дефицит до прихода поставки. Отсутствие цены приоритет не снижает.</p>
+        ${top.length ? `<div class="table-wrap"><table class="actions-table">
+          <thead><tr><th>Статус</th><th>Товар</th><th class="hide-md">Поставщик</th><th class="r">Остаток</th><th class="r hide-md">Дней запаса</th><th>Закончится</th><th>Заказать до</th><th class="r">Заказ, шт</th><th class="hide-sm">Причина приоритета</th></tr></thead>
+          <tbody>${top.map((x) => `<tr data-id="${esc(x.s.id)}" tabindex="0">
+            <td>${statusPill(x.r.status)}</td>
+            <td><div class="p-name">${esc(x.s.n)}</div><div class="p-meta"><span>${esc(x.s.id)}</span><span class="abc">${x.s.abc}</span></div></td>
+            <td class="hide-md">${esc(SUPS[x.s.sup].name)}</td>
+            <td class="r num">${fmt(x.r.stock)}</td>
+            <td class="r num hide-md">${x.r.stockoutDay == null ? "> 180" : fmt(x.r.stockoutDay)}</td>
+            <td class="num">${fDay(x.r.stockoutDay)}</td>
+            <td class="num"><b>${x.r.safeDay == null ? NA : x.r.status === "now" ? '<span style="color:var(--crit)">немедленно</span>' : x.r.safeDay < 0 ? `<span style="color:var(--crit)">просрочено ${fmt(-x.r.safeDay)} дн</span>` : x.r.safeDay === 0 ? "сегодня" : Engine.fmtDay(x.r.safeDay)}</b></td>
+            <td class="r num"><b>${fmt(x.final)}</b>${x.r.moq > 1 ? `<div class="rec-hint">кратно ${fmt(x.r.moq)}</div>` : ""}</td>
+            <td class="reason hide-sm">${esc(reasonText(x))}</td>
+          </tr>`).join("")}</tbody></table></div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">
+            <button class="btn primary" id="allActs">Все действия (${fmt(acts.length)})</button>
+            <button class="btn" id="goCal">Календарь заказов</button>
+          </div>`
+        : `<div class="empty">Срочных действий нет: по всем позициям безопасный день заказа дальше чем через неделю.</div>`}
+      </div>`;
+    bindRows($("#tab-today"));
+    $("#allActs")?.addEventListener("click", () => setFilter({ urg: "all", st: "all", win: null, onlyOrder: true, sort: "action" }));
+    $("#goCal")?.addEventListener("click", () => switchTab("calendar"));
+  }
+  function bindRows(root) {
+    $$("tr[data-id]", root).forEach((tr) => {
+      tr.addEventListener("click", (e) => { if (!e.target.closest("input")) openDrawer(tr.dataset.id); });
+      tr.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.target.closest("input")) openDrawer(tr.dataset.id); });
+    });
+  }
+
   function setFilter(f) {
+    state.deficitOnly = false;
     Object.assign(state, f);
     $("#onlyOrder").checked = state.onlyOrder;
+    $("#statusSel").value = state.st;
+    $("#sortSel").value = state.sort;
     switchTab("orders");
     render();
   }
@@ -179,6 +263,10 @@
       <button class="chip ${state.urg === k ? "active" : ""}" data-u="${k}">
         ${k !== "all" ? `<span class="dot" style="background:var(--${k === "critical" ? "crit" : k === "soon" ? "warn" : k === "planned" ? "plan" : "good"})"></span>` : ""}
         ${l} <b>${fmt(counts[k])}</b></button>`).join("");
+    if (state.deficitOnly) {
+      $("#urgChips").insertAdjacentHTML("beforeend", `<button class="chip active" id="defChip">Ожидаемый дефицит ✕</button>`);
+      $("#defChip").addEventListener("click", () => { state.deficitOnly = false; render(); });
+    }
     if (state.win) {
       const w = WINDOWS.find((x) => x.k === state.win);
       $("#urgChips").insertAdjacentHTML("beforeend", `<button class="chip active" id="winChip">Заказать: ${w.label.toLowerCase()} ✕</button>`);
@@ -225,7 +313,7 @@
       </div>
       <div class="table-wrap"><table>
         <thead><tr>
-          <th>Срочность</th><th>Товар и обоснование</th>
+          <th>Статус</th><th>Товар и обоснование</th>
           <th class="r">Остаток</th><th class="r hide-sm">В пути</th><th class="r hide-sm">Спрос/мес</th>
           <th>Заказать до</th><th class="r">Заказ, шт</th><th class="r hide-sm">Сумма</th>
         </tr></thead>
@@ -237,8 +325,10 @@
 
   function rowHtml({ s, r, final, value }, locked) {
     const edited = state.overrides[s.id] != null;
-    return `<tr data-id="${esc(s.id)}">
-      <td>${pill(r.urgency)}</td>
+    const b = state.alloc && state.alloc.mark[s.id];
+    const badge = b ? `<div><span class="badge ${b}">${b === "in" ? "в бюджете" : b === "out" ? "не поместилось" : "нет цены"}</span></div>` : "";
+    return `<tr data-id="${esc(s.id)}" tabindex="0">
+      <td>${statusPill(r.status)}<div class="urg-small">срочность: ${URG[r.urgency].label.toLowerCase()}</div></td>
       <td>
         <div class="p-name">${esc(s.n)}</div>
         <div class="p-meta"><span>${esc(s.id)}</span>${s.art ? `<span>${esc(s.art)}</span>` : ""}<span>${esc(s.g)}</span><span class="abc" title="ABC: частота спроса">${s.abc}</span></div>
@@ -250,19 +340,20 @@
       <td>${orderByCell(r)}</td>
       <td class="r">
         <input class="qty-input ${edited ? "edited" : ""}" type="number" min="0" step="${s.moq}" value="${final}" data-qty="${esc(s.id)}" ${locked ? "disabled" : ""} aria-label="Количество к заказу">
-        ${edited ? `<div class="rec-hint">расчёт: ${fmt(r.qty)}</div>` : s.moq > 1 ? `<div class="rec-hint">кратно ${fmt(s.moq)}</div>` : ""}
+        ${edited ? `<div class="rec-hint">расчёт: ${fmt(r.qty)}</div>` : s.moq > 1 ? `<div class="rec-hint">кратно ${fmt(s.moq)}</div>` : ""}${badge}
       </td>
-      <td class="r num hide-sm">${value ? money(value) : '<span class="muted">—</span>'}</td>
+      <td class="r num hide-sm">${Engine.hasPrice(s) ? (final > 0 ? money(value) : "0 ₸") : NA}</td>
     </tr>`;
   }
 
   function orderByCell(r) {
-    const ob = r.orderByDay, out = r.stockoutDay;
-    const outTxt = out == null ? "запаса хватит > 6 мес" : `${out < r.L * 30 ? "дефицит с" : "закончится"} ${dayDate(out)}`;
-    if (ob == null) return `<div class="ob ok">Не нужно</div><div class="ob-sub">${outTxt}</div>`;
-    const cls = ob <= 0 ? (r.urgency === "critical" ? "crit" : "warn") : ob <= 14 ? "warn" : "plan";
-    const main = ob <= 0 ? "Сегодня" : dayDate(ob);
-    return `<div class="ob ${cls}">${main}</div><div class="ob-sub">${ob > 0 ? inDays(ob) + " · " : ob < 0 ? `опоздание ${fmt(-ob)} дн · ` : ""}${outTxt}</div>`;
+    const sd = r.safeDay, out = r.stockoutDay;
+    if (r.status === "nodata") return `<div class="ob">${NA}</div><div class="ob-sub">мало истории продаж</div>`;
+    const outTxt = out == null ? "запаса хватит > 6 мес" : `${r.expectedDeficit ? "дефицит с" : "закончится"} ${dayDate(out)}`;
+    if (sd == null) return `<div class="ob ok">Не нужно</div><div class="ob-sub">${outTxt}</div>`;
+    const cls = sd < 0 || r.status === "now" ? "crit" : sd <= 7 ? "warn" : "plan";
+    const main = r.status === "now" ? "Немедленно" : sd < 0 ? "Просрочено" : sd === 0 ? "Сегодня" : dayDate(sd);
+    return `<div class="ob ${cls}">${main}</div><div class="ob-sub">${sd > 0 ? inDays(sd) + " · " : sd < 0 && r.status !== "now" ? `на ${fmt(-sd)} дн · ` : ""}${r.status === "now" ? "товара нет на складе" : outTxt}</div>`;
   }
 
   function shortWhy(s, r) {
@@ -278,10 +369,7 @@
   }
 
   function bindOrders() {
-    $$("#orders tbody tr").forEach((tr) => tr.addEventListener("click", (e) => {
-      if (e.target.closest("input")) return;
-      openDrawer(tr.dataset.id);
-    }));
+    bindRows($("#orders"));
     $$("#orders [data-qty]").forEach((inp) => {
       inp.addEventListener("click", (e) => e.stopPropagation());
       inp.addEventListener("change", () => {
@@ -332,31 +420,31 @@
       m.hidden = true;
       render();
       exportXlsx([k]);
-      toast(`Заказ ${SUPS[k].name} утверждён`);
+      toast(`Заказ ${SUPS[k].name} утверждён и выгружен. Отправку поставщику делает менеджер`);
     };
   }
 
   function exportXlsx(keys = Object.keys(SUPS).filter((k) => state.sup === "all" || k === state.sup)) {
     if (!window.XLSX) { toast("Библиотека Excel не загрузилась"); return; }
     const wb = XLSX.utils.book_new();
+    const ctx = {
+      supName: (k) => SUPS[k].name, urgLabel: (u) => URG[u].label,
+      approval: (k) => (state.approved[k] ? `Утверждён ${state.approved[k].at}, не отправлен поставщику` : "Черновик, не отправлен"),
+    };
     keys.forEach((k) => {
-      const lines = sorted(rows.filter((x) => x.s.sup === k && x.final > 0));
-      const data = lines.map(({ s, r, final }) => ({
-        "Код 1С": s.id, "Артикул поставщика": s.art || "", "Наименование": s.n, "Количество": final,
-        "Ед.": "шт", "Цена (себест.)": s.pr ?? "", "Сумма": s.pr ? Math.round(final * s.pr * 100) / 100 : "",
-        "Срочность": URG[r.urgency].label,
-        "Заказать до": r.orderByDay == null ? "" : r.orderByDay <= 0 ? "сегодня" : Engine.dateOf(r.orderByDay).toISOString().slice(0, 10).split("-").reverse().join("."),
-        "Закончится без заказа": r.stockoutDay == null ? "> 6 мес" : Engine.dateOf(r.stockoutDay).toISOString().slice(0, 10).split("-").reverse().join("."),
-        "Расчётное кол-во": r.qty, "Изменено вручную": state.overrides[s.id] != null ? "да" : "",
-        "Остаток": r.stock, "В пути": r.transit, "Спрос/мес": Math.round(r.monthly * 10) / 10,
-        "Группа": s.g, "ABC": s.abc, "Обоснование": Engine.explain(s, r, state.p),
-        "Статус": state.approved[k] ? `Утверждён ${state.approved[k].at}` : "Черновик",
-      }));
+      const lines = rows.filter((x) => x.s.sup === k && x.final > 0).sort(Engine.actionCompare);
+      const data = Engine.exportRows(lines, state.p, ctx);
       const ws = XLSX.utils.json_to_sheet(data);
-      ws["!cols"] = [12, 18, 50, 10, 5, 12, 12, 12, 12, 16, 12, 10, 10, 10, 10, 22, 5, 90, 20].map((w) => ({ wch: w }));
+      // коды 1С и артикулы — текст, чтобы Excel не срезал ведущие нули
+      const range = XLSX.utils.decode_range(ws["!ref"] || "A1");
+      for (let R = 1; R <= range.e.r; R++) [1, 2].forEach((C) => {
+        const c = ws[XLSX.utils.encode_cell({ r: R, c: C })];
+        if (c) { c.t = "s"; c.v = String(c.v); c.z = "@"; }
+      });
+      ws["!cols"] = [16, 13, 18, 50, 5, 9, 10, 10, 10, 12, 12, 16, 12, 11, 11, 9, 12, 13, 11, 90, 28].map((w) => ({ wch: w }));
       XLSX.utils.book_append_sheet(wb, ws, SUPS[k].name.slice(0, 31));
     });
-    XLSX.writeFile(wb, `Заказ_поставщикам_${META.asOf}.xlsx`);
+    XLSX.writeFile(wb, `Заказ_поставщикам_${META.asOf}_${SCN[state.p.scenario].label}.xlsx`);
   }
 
   // ---------------- drawer ----------------
@@ -368,24 +456,41 @@
     const { s, r } = row;
     const d = $("#drawer");
     const scroll = d.scrollTop;
-    const sens = Engine.sensitivity(s, state.p);
     const p = state.p;
-    const priceRow = s.pr ? `<div class="h-sub">${money(row.final * s.pr)} по себестоимости</div>` : "";
+    const priced = Engine.hasPrice(s);
+    const trList = s.tr.length ? s.tr.map((t) => `${esc(t[0])}: ${fmt(t[1])} шт · ${t[2] ? "приход до " + Engine.fmtDay(Engine.dayOf(t[2])) : "<b>без даты — не учтено</b>"}`).join("<br>") : "нет";
+    const dq = [
+      priced ? "цена есть" : "нет цены",
+      s.mq ? "кратность из файла" : "кратность не задана (принята 1)",
+      `история ${s.nh ?? "?"} мес`,
+      s.rt ? `возвраты: ${s.rt}` : null,
+      r.transitNoEta ? "в пути без даты" : null,
+      s.av ? `stockout: ${s.av.filter((a) => a < 1).length} мес` : null,
+    ].filter(Boolean).join(" · ");
+    const fact = (l, v, sub = "", cls = "") => `<div class="fact ${cls}"><div class="f-l">${l}</div><div class="f-v">${v}</div>${sub ? `<div class="f-s">${sub}</div>` : ""}</div>`;
     d.innerHTML = `
       <div class="d-head">
         <div>
-          <div style="margin-bottom:6px">${pill(r.urgency)}</div>
+          <div style="margin-bottom:6px;display:flex;gap:6px;flex-wrap:wrap">${statusPill(r.status)}${pill(r.urgency)}<span class="scen-tag">Сценарий: ${SCN[p.scenario].label}</span></div>
           <h2>${esc(s.n)}</h2>
           <div class="p-meta"><span>Код 1С ${esc(s.id)}</span>${s.art ? `<span>Арт. ${esc(s.art)}</span>` : ""}<span>${esc(SUPS[s.sup].name)}</span><span>${esc(s.g)}</span><span>ABC: ${s.abc}${s.pc ? ` · кат. партнёра ${esc(s.pc)}` : ""}</span></div>
         </div>
         <button class="d-close" aria-label="Закрыть"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
       </div>
       <div class="d-body">
-        <div class="hero">
-          <div class="h-card main"><div class="h-label">Рекомендуем заказать</div><div class="h-value num">${fmt(row.final)} шт</div>${priceRow}</div>
-          <div class="h-card"><div class="h-label">Заказать до</div><div class="h-value num">${r.orderByDay == null ? "—" : r.orderByDay <= 0 ? "Сегодня" : dayDate(r.orderByDay)}</div><div class="h-sub">${r.orderByDay == null ? "заказ пока не нужен" : `поставка идёт ${fmt(r.L * 30)} дн`}</div></div>
-          <div class="h-card"><div class="h-label">Регулярный спрос</div><div class="h-value num">${fmt(r.level, r.level < 10 ? 1 : 0)}</div><div class="h-sub">шт/мес без сезонности</div></div>
+        <div class="facts">
+          ${fact("Закончится", fDay(r.stockoutDay), r.stockoutDay == null ? (r.status === "nodata" ? "мало истории" : "не раньше чем через 6 мес") : inDays(r.stockoutDay), r.status === "now" || r.expectedDeficit ? "crit" : "")}
+          ${fact("Последний безопасный день", r.safeDay == null ? NA : r.status === "now" ? "Немедленно" : r.safeDay < 0 ? "Просрочено" : Engine.fmtDay(r.safeDay), r.safeDay == null ? (r.status === "nodata" ? "мало истории" : "заказ пока не нужен") : r.status === "now" ? "товара уже нет" : r.safeDay < 0 ? `на ${fmt(-r.safeDay)} дн` : inDays(r.safeDay), r.safeDay != null && r.safeDay < 0 ? "crit" : "")}
+          ${fact("Приход, если заказать сегодня", Engine.fmtDay(r.arrivalDay), `${p.buffer} дн согласования + ${r.leadDays} дн поставки`)}
+          ${fact("Дефицит до прихода", r.status === "nodata" ? NA : `${fmt(r.deficitLead)} шт`, r.deficitLead >= 1 ? "продажи, которые не состоятся" : "дефицита нет", r.deficitLead >= 1 ? "crit" : "")}
+          ${fact("Дней запаса", r.stockoutDay == null ? (r.status === "nodata" ? NA : "> 180") : fmt(r.stockoutDay), "с учётом товара в пути по датам")}
+          ${fact("Рекомендуемый заказ", `${fmt(row.final)} шт`, `${state.overrides[s.id] != null ? `расчёт ${fmt(r.qty)} · изменено вручную` : `потребность ${fmt(Math.max(r.need, 0))} → кратно ${fmt(r.moq)}`}${priced ? ` · ${money(row.final * s.pr)}` : " · цена: нет данных"}`, "main")}
+          ${fact("Текущий остаток", `${fmt(r.stock)} шт`, s.wh ? Object.entries(s.wh).map(([k, v]) => `${esc(k)}: ${fmt(v)}`).join(" · ") : `на ${META.asOf.split("-").reverse().join(".")}`)}
+          ${fact("Товар в пути", `${fmt(r.transit + r.transitNoEta + r.transitLate)} шт`, trList)}
+          ${fact("Качество данных", s.nh >= META.minHistory && priced ? "Полные" : "Неполные", dq)}
         </div>
+
+        <div class="d-sec"><h4>Почему именно так</h4><p class="say">${esc(Engine.explain(s, r, p))}</p>${factorTable(s, r, row)}</div>
 
         <div class="d-sec"><h4>Календарь остатка на 6 месяцев</h4>${stockChart(s, r, row.final)}</div>
 
@@ -396,15 +501,10 @@
             ${calcRow("", `Прогноз спроса на ${fmt(r.H, 1)} мес.`, `срок поставки ${months(r.L)} + пересмотр ${months(p.review)}${p.season ? `, сезонность ×${r.seasonMult.toFixed(2)}` : ""}${p.trend && r.growth ? `, тренд ${r.growth > 0 ? "+" : ""}${Math.round(r.growth * 100)}%` : ""}`, r.demandH)}
             ${calcRow("+", "Страховой запас", `z = ${r.z} (категория ${s.abc}) × σ ${fmt(r.sd, 1)} × √${fmt(r.H, 1)}`, r.safety)}
             ${calcRow("−", "Остаток на складе", s.wh ? Object.entries(s.wh).map(([k, v]) => `${k}: ${fmt(v)}`).join(" · ") : `на ${META.asOf.split("-").reverse().join(".")}`, r.stock)}
-            ${calcRow("−", "Товар в пути", p.transit ? (s.tr.length ? s.tr.map((t) => `${t[0]}${t[2] ? ` (до ${t[2].split("-").reverse().join(".")})` : ""}: ${fmt(t[1])}`).join(" · ") : "нет") : "не учитывается", r.transit)}
+            ${calcRow("−", "Подтверждённый товар в пути", p.transit ? (r.transitNoEta ? `без даты прихода ${fmt(r.transitNoEta)} шт не учтено` : "с датой прихода в пределах горизонта") : "не учитывается", r.transit)}
             ${calcRow("=", "Потребность", "", r.need)}
             <div class="calc-row total"><span class="op">→</span><div><div>Заказ с учётом кратности ${fmt(s.moq)}</div>${state.overrides[s.id] != null ? `<div class="c-sub">изменено вручную, расчёт: ${fmt(r.qty)}</div>` : ""}</div><div class="c-val">${fmt(row.final)} шт</div></div>
           </div>
-        </div>
-
-        <div class="d-sec"><h4>Что повлияло на заказ</h4>
-          <p class="muted" style="margin:-4px 0 10px;font-size:12.5px">Насколько изменился бы заказ, если выключить фактор</p>
-          ${factorBars(sens)}
         </div>
 
         ${s.oo.length ? `<div class="d-sec"><h4>Исключённые разовые заказы</h4><div class="list">
@@ -419,7 +519,6 @@
           ${s.av.map((a, i) => (a < 1 ? `<div class="list-row"><span>${META.months[i]}</span><span>${a <= 0.1 ? "не было весь месяц" : a < 0.6 ? "большую часть месяца" : "часть месяца"} · продано ${fmt(s.raw[i])}, спрос оценён <b class="num">${fmt(s.rst[i])}</b></span></div>` : "")).join("")}
         </div></div>` : ""}
 
-        <div class="d-sec"><h4>Обоснование для 1С</h4><p style="margin:0;color:var(--text-2)">${esc(Engine.explain(s, r, p))}</p></div>
       </div>`;
     $(".d-close", d).onclick = closeDrawer;
     bindChart(d);
@@ -437,23 +536,25 @@
   }
   const calcRow = (op, title, sub, val) => `<div class="calc-row"><span class="op">${op}</span><div><div>${title}</div>${sub ? `<div class="c-sub">${esc(sub)}</div>` : ""}</div><div class="c-val">${fmt(val)}</div></div>`;
 
-  function factorBars(sens) {
+  /** Вклад каждого фактора в штуках. Для алгоритмических факторов — разница заказа
+   *  «с фактором» и «без него»; для остатка, товара в пути, страхового запаса и MOQ — прямое слагаемое. */
+  function factorTable(s, r, row) {
+    const p = state.p;
+    const sens = Engine.sensitivity(s, p);
+    const d = (k) => (p[k] ? -sens[k] : null);
+    const sign = (v) => (v == null ? '<span class="muted">выкл.</span>' : v === 0 ? "0" : `${v > 0 ? "+" : "−"}${fmt(Math.abs(v))} шт`);
     const items = [
-      ["oneoff", "Исключение разовых заказов и всплесков"], ["restore", "Восстановление упущенного спроса"],
-      ["season", "Сезонность"], ["trend", "Тренд"], ["transit", "Товар в пути"],
+      ["Сезонность", d("season"), p.season && r.level > 0 ? `коэффициент на горизонте ×${r.seasonMult.toFixed(2)}` : ""],
+      ["Тренд", d("trend"), p.trend ? `${r.growth >= 0 ? "+" : ""}${Math.round(r.growth * 100)}% год к году (ограничен −30…+50%)` : ""],
+      ["Восстановленный спрос при stockout", d("restore"), r.lost > 0.5 ? `+${fmt(r.lost)} шт спроса за 12 мес` : "дефицита в истории не было"],
+      ["Исключённые разовые продажи и всплески", d("oneoff"), s.oo.length ? `${s.oo.length} накладных, ${fmt(r.oneoffQty)} шт` : s.cap ? `${s.cap.length} мес. сглажено` : "не найдено"],
+      ["Текущий остаток", -r.stock, "вычитается из потребности"],
+      ["Подтверждённый товар в пути", p.transit ? -r.transit : null, r.transitNoEta ? `ещё ${fmt(r.transitNoEta)} шт без даты не учтено` : ""],
+      ["Страховой запас", Math.round(r.safety), `z ${r.z} × σ ${fmt(r.sd, 1)} × √${fmt(r.H, 1)} (категория ${s.abc})`],
+      ["Округление до MOQ", r.qty > 0 ? Math.round(r.qty - r.need) : 0, `кратность ${fmt(r.moq)}${s.mq ? "" : " (нет в файле — принята 1)"}`],
     ];
-    const max = Math.max(1, ...items.map(([k]) => Math.abs(sens[k])));
-    return `<div class="factors">${items.map(([k, label]) => {
-      const on = state.p[k];
-      // вклад фактора = заказ с фактором − заказ без него
-      const v = -sens[k];
-      const w = (Math.abs(v) / max) * 50;
-      const color = v >= 0 ? "var(--series-1)" : "var(--series-2)";
-      const style = v >= 0 ? `left:50%;width:${w}%` : `right:50%;width:${w}%`;
-      return `<div class="factor"><span>${label}${on ? "" : ' <span class="muted">(выкл.)</span>'}</span>
-        <div class="f-bar"><i style="${style};background:${color}"></i></div>
-        <span class="f-val">${v === 0 ? '<span class="muted">0</span>' : (v > 0 ? "+" : "−") + fmt(Math.abs(v))}</span></div>`;
-    }).join("")}</div>`;
+    return `<table class="ftable">${items.map(([l, v, n]) => `<tr><td>${l}<div class="n">${esc(n)}</div></td><td class="v">${sign(v)}</td></tr>`).join("")}
+      <tr><td><b>Рекомендуемый заказ</b><div class="n">сценарий «${SCN[p.scenario].label}»</div></td><td class="v"><b>${fmt(r.qty)} шт</b></td></tr></table>`;
   }
 
   // ---------------- charts ----------------
@@ -542,75 +643,76 @@
       </div>`;
   }
   function stockChart(s, r, orderQty) {
-    const pr = Engine.projection(s, state.p, orderQty);
+    if (r.status === "nodata") return `<div class="empty-state">Недостаточно истории продаж, чтобы построить календарь остатка. Нужны продажи хотя бы за ${META.minHistory} месяца.</div>`;
+    const pr = Engine.projection(s, state.p, orderQty, r);
     const pts = pr.pts;
     const N = pts.length - 1;
-    const W = 680, H = 230, pl = 44, prr = 12, pt = 18, pb = 26;
+    const W = 680, H = 240, pl = 44, prr = 12, pt = 30, pb = 26;
     const iw = W - pl - prr, ih = H - pt - pb;
-    const maxV = Math.max(1, r.safety * 1.2, ...pts.map((p) => Math.max(p[1], p[2])));
+    const maxV = Math.max(1, r.safety * 1.2, ...pts.map((q) => Math.max(q[1], q[2])));
     const nice = niceMax(maxV);
     const x = (i) => pl + (i / N) * iw;
     const y = (v) => pt + ih - (Math.min(v, nice) / nice) * ih;
-    const L = pr.leadDays;
-    let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Прогноз остатка по дням">`;
-    for (let k = 0; k <= 4; k++) {
+    let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Прогноз остатка по дням">
+      <defs><pattern id="hatch2" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="var(--crit)" stroke-width="1.5" opacity=".45"/></pattern></defs>`;
+    for (let k = 1; k <= 4; k++) {
       const v = (nice / 4) * k;
       svg += `<line x1="${pl}" x2="${W - prr}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${pl - 6}" y="${y(v) + 3}" text-anchor="end" font-size="10" fill="var(--text-3)">${short(v)}</text>`;
     }
-    // зона «товара нет» без заказа
-    let run = null;
+    // нулевая линия
+    svg += `<line x1="${pl}" x2="${W - prr}" y1="${y(0)}" y2="${y(0)}" stroke="var(--text-3)" stroke-width="1"/><text x="${pl - 6}" y="${y(0) + 3}" text-anchor="end" font-size="10" fill="var(--text-3)">0</text>`;
+    // зона дефицита без нового заказа
     const zones = [];
-    pts.forEach((p, i) => {
-      const empty = p[1] <= 0 && p[3] > 0;
+    let run = null;
+    pts.forEach((q, i) => {
+      const empty = q[1] <= 0 && q[3] > 0;
       if (empty && run == null) run = i;
       if ((!empty || i === N) && run != null) { zones.push([run, empty ? i : i - 1]); run = null; }
     });
-    zones.forEach(([a, b]) => { svg += `<rect x="${x(a)}" y="${pt + ih - 14}" width="${Math.max(2, x(b) - x(a))}" height="14" fill="url(#hatch2)"/>`; });
-    if (zones.length) svg += `<text x="${x(zones[0][0]) + 4}" y="${pt + ih - 18}" font-size="10" font-weight="600" fill="var(--crit)">без заказа товара нет</text>`;
-    svg += `<defs><pattern id="hatch2" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="var(--crit)" stroke-width="1.5" opacity=".35"/></pattern></defs>`;
+    zones.forEach(([a, b]) => { svg += `<rect x="${x(a)}" y="${y(0) - 16}" width="${Math.max(2, x(b) - x(a))}" height="16" fill="url(#hatch2)"/>`; });
+    if (zones.length) svg += `<text x="${Math.min(x(zones[0][0]) + 4, W - 150)}" y="${y(0) - 20}" font-size="10" font-weight="600" fill="var(--crit)">дефицит без нового заказа</text>`;
     // страховой запас
-    if (r.safety > 0) svg += `<line x1="${pl}" x2="${W - prr}" y1="${y(r.safety)}" y2="${y(r.safety)}" stroke="var(--warn)" stroke-dasharray="4 4"/><text x="${W - prr}" y="${y(r.safety) - 4}" text-anchor="end" font-size="10" fill="var(--warn)">страховой запас</text>`;
-    // вертикальные метки
-    const vline = (i, label, color, dy = 0) => {
-      if (i == null || i < 0 || i > N) return "";
-      return `<line x1="${x(i)}" x2="${x(i)}" y1="${pt}" y2="${pt + ih}" stroke="${color}" stroke-width="1.5" stroke-dasharray="2 3"/><text x="${x(i) + 4}" y="${pt + 10 + dy}" font-size="10" font-weight="600" fill="${color}">${label}</text>`;
-    };
-    svg += vline(0, "сегодня", "var(--text-3)");
-    if (pr.orderByDay != null && pr.orderByDay > 0) svg += vline(pr.orderByDay, `заказать до ${dayDate(pr.orderByDay)}`, "var(--warn)", 12);
-    if (orderQty > 0) svg += vline(L, `приход заказа +${short(orderQty)}`, "var(--series-1)", 24);
-    // линии остатка
-    const path0 = pts.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p[1]).toFixed(1)}`).join("");
-    const path1 = pts.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p[2]).toFixed(1)}`).join("");
-    svg += `<path d="${path0}" fill="none" stroke="var(--text-3)" stroke-width="2" stroke-dasharray="5 4"/>`;
-    if (orderQty > 0) svg += `<path d="${path1}" fill="none" stroke="var(--series-1)" stroke-width="2"/>`;
-    // приходы товара в пути
-    pr.arrivals.forEach((a) => {
-      if (a.day > N) return;
-      svg += `<path d="M${x(a.day)},${pt + ih + 2} l-5,8 h10 z" fill="var(--series-1)"/>`;
+    if (r.safety > 0 && r.safety < nice) svg += `<line x1="${pl}" x2="${W - prr}" y1="${y(r.safety)}" y2="${y(r.safety)}" stroke="var(--warn)" stroke-dasharray="4 4"/><text x="${W - prr}" y="${y(r.safety) - 4}" text-anchor="end" font-size="10" fill="var(--warn)">страховой запас</text>`;
+    // метки дат: подписи в верхней полосе, чтобы не перекрывать линии
+    const marks = [[0, "сегодня", "var(--text-3)"]];
+    if (pr.safeDay != null && pr.safeDay > 0 && pr.safeDay <= N) marks.push([pr.safeDay, `заказать до ${dayDate(pr.safeDay)}`, "var(--warn)"]);
+    if (pr.arrivalDay <= N) marks.push([pr.arrivalDay, `приход заказа ${dayDate(pr.arrivalDay)}`, "var(--series-1)"]);
+    if (pr.stockoutDay != null && pr.stockoutDay > 0) marks.push([pr.stockoutDay, `закончится ${dayDate(pr.stockoutDay)}`, "var(--crit)"]);
+    marks.sort((a, b) => a[0] - b[0]);
+    let lastX = -1e9, row = 0;
+    marks.forEach(([i, label, color]) => {
+      const xx = x(i);
+      row = xx - lastX < 120 ? (row + 1) % 2 : 0;
+      lastX = xx;
+      svg += `<line x1="${xx}" x2="${xx}" y1="${pt - 4 + row * 12}" y2="${pt + ih}" stroke="${color}" stroke-width="1.5" stroke-dasharray="2 3"/>`;
+      svg += `<text x="${Math.min(xx + 3, W - 110)}" y="${pt - 8 + row * 12}" font-size="10" font-weight="600" fill="${color}">${label}</text>`;
     });
+    // линии остатка
+    const line0 = pts.map((q, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(q[1]).toFixed(1)}`).join("");
+    const line1 = pts.map((q, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(q[2]).toFixed(1)}`).join("");
+    svg += `<path d="${line0}" fill="none" stroke="var(--text-3)" stroke-width="2" stroke-dasharray="5 4"/>`;
+    if (orderQty > 0) svg += `<path d="${line1}" fill="none" stroke="var(--series-1)" stroke-width="2"/>`;
+    pr.arrivals.forEach((a) => { if (a.day <= N) svg += `<path d="M${x(a.day)},${y(0) + 2} l-5,8 h10 z" fill="var(--series-1)"/>`; });
     if (pr.stockoutDay != null) svg += `<circle cx="${x(pr.stockoutDay)}" cy="${y(0)}" r="5" fill="var(--crit)" stroke="var(--surface)" stroke-width="2"/>`;
-    // ось X — месяцы
     for (let i = 0; i <= N; i++) {
-      const d = Engine.dateOf(i);
-      if (d.getUTCDate() === 1) svg += `<text x="${x(i)}" y="${H - 6}" text-anchor="middle" font-size="10" fill="var(--text-3)">${MON[d.getUTCMonth()]}</text>`;
+      const dt = Engine.dateOf(i);
+      if (dt.getUTCDate() === 1) svg += `<text x="${x(i)}" y="${H - 6}" text-anchor="middle" font-size="10" fill="var(--text-3)">${MON[dt.getUTCMonth()]}</text>`;
     }
     svg += `<rect class="stock-hit" x="${pl}" y="${pt}" width="${iw}" height="${ih}" fill="transparent"/><line class="cross" x1="0" x2="0" y1="${pt}" y2="${pt + ih}" stroke="var(--text-3)" opacity="0"/></svg>`;
-    // вывод словами
-    const out = pr.stockoutDay, out1 = pr.stockoutWithOrder;
-    let say;
-    if (out == null) say = `Без нового заказа запаса хватит больше чем на 6 месяцев.`;
-    else say = `Без нового заказа товар <b>закончится ${dayDate(out)}</b> (${inDays(out)})${pr.deficit >= 1 ? `, до конца горизонта не хватит ≈ <b>${fmt(pr.deficit)} шт</b>${s.pr ? ` на ${money(pr.deficit * s.pr)}` : ""}` : ""}.`;
-    if (pr.orderByDay != null) say += pr.orderByDay > 0 ? ` Чтобы не допустить дефицита, разместите заказ <b>до ${dayDate(pr.orderByDay)}</b>.` : out != null && out < L ? ` Даже если заказать сегодня, поставка придёт ${dayDate(L)} — дефицит с ${dayDate(out)} уже не избежать, заказывайте немедленно.` : ` Заказ нужно разместить <b>сегодня</b>, иначе запас опустится ниже страхового уровня.`;
-    if (orderQty > 0) say += ` Рекомендованный заказ ${fmt(orderQty)} шт придёт ~${dayDate(L)}, после этого запаса хватит ${out1 == null ? "до конца горизонта (6 мес.)" : "до " + dayDate(out1)}.`;
-    if (orderQty > 0 && pr.nextOrderByDay != null) say += ` Следующий заказ — <b>до ${dayDate(Math.max(pr.nextOrderByDay, 1))}</b>.`;
-    if (out != null && out < L && pr.orderByDay != null && pr.orderByDay <= 0) say += `<br><span class="muted">Как сократить дефицит: срочная доставка, перемещение с другого склада или аналог другого поставщика.</span>`;
-    const html = `<p class="say">${say}</p><div class="chart" data-stock='${esc(JSON.stringify({ n: N }))}'>${svg}</div>
+    const noEta = r.transitNoEta ? `<div class="banner" style="margin:10px 0 0"><svg viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v4M12 17.5v.5"/></svg><div>${fmt(r.transitNoEta)} шт в пути без даты прихода не показаны на графике и не уменьшают заказ. Уточните ETA у поставщика.</div></div>` : "";
+    let after = "";
+    if (orderQty > 0) {
+      after = `С заказом ${fmt(orderQty)} шт (приход ${dayDate(pr.arrivalDay)}) запаса хватит ${pr.stockoutWithOrder == null ? "до конца горизонта" : "до " + dayDate(pr.stockoutWithOrder)}.`;
+      if (pr.nextOrderByDay != null) after += ` Следующий заказ — до ${dayDate(Math.max(pr.nextOrderByDay, 0))}.`;
+    }
+    const html = `<div class="chart">${svg}</div>
       <div class="legend">
         <span><i style="width:16px;height:0;border-top:2px dashed var(--text-3)"></i>Остаток без нового заказа</span>
         ${orderQty > 0 ? `<span><i style="width:16px;height:2px;background:var(--series-1)"></i>С рекомендованным заказом</span>` : ""}
         <span><i style="width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:8px solid var(--series-1)"></i>Приход товара в пути</span>
-        ${zones.length ? `<span><i style="width:12px;height:12px;background:repeating-linear-gradient(45deg,color-mix(in srgb,var(--crit) 35%,transparent) 0 1.5px,transparent 1.5px 4px)"></i>Товара нет — продажи теряются</span>` : ""}
-      </div>`;
+        ${zones.length ? `<span><i style="width:12px;height:12px;background:repeating-linear-gradient(45deg,color-mix(in srgb,var(--crit) 45%,transparent) 0 1.5px,transparent 1.5px 4px)"></i>Дефицит — продажи теряются</span>` : ""}
+      </div>${after ? `<p class="say" style="margin-top:8px">${after}</p>` : ""}${noEta}
+      <p class="muted" style="font-size:12px;margin:6px 0 0">Прогноз спроса по месяцам — на графике «История спроса и прогноз» ниже; здесь он распределён по дням месяца.</p>`;
     stockCache = { pr, x0: pl, iw, N, W, orderQty };
     return html;
   }
@@ -714,7 +816,16 @@
     const lost = base.filter((x) => x.r.lost > 0.5).sort((a, b) => (b.s.pr ? b.r.lost * b.s.pr : b.r.lost) - (a.s.pr ? a.r.lost * a.s.pr : a.r.lost)).slice(0, 10);
     const lostList = lost.map(({ s, r }) => `<div class="list-row" data-open="${esc(s.id)}" style="cursor:pointer"><span>${esc(s.n)}<br><span class="muted">${esc(SUPS[s.sup].name)} · ${s.av.filter((a) => a < 1).length} мес. без товара</span></span><span style="text-align:right;white-space:nowrap"><b class="num">+${fmt(r.lost)} шт</b>${s.pr ? `<br><span class="muted">≈ ${money(r.lost * s.pr)}</span>` : ""}</span></div>`).join("");
 
+    const excess = base.filter((x) => x.r.excess > 0);
+    const excessVal = excess.reduce((a, x) => a + (Engine.hasPrice(x.s) ? x.r.excess * x.s.pr : 0), 0);
+    const oneDocs = base.reduce((a, x) => a + x.s.oo.length, 0), oneQty = base.reduce((a, x) => a + x.r.oneoffQty, 0);
+    const lostQ = base.reduce((a, x) => a + Math.max(0, x.r.lost), 0);
     $("#tab-analytics").innerHTML = `
+      <div class="bstats">
+        <div class="fact"><div class="f-l">Излишки (запас > 6 мес)</div><div class="f-v">${fmt(excess.length)} поз.</div><div class="f-s">${excessVal ? `${money(excessVal)} по известным ценам` : "цены неизвестны"}</div></div>
+        <div class="fact"><div class="f-l">Разовые заказы исключены</div><div class="f-v">${fmt(oneDocs)}</div><div class="f-s">${fmt(oneQty)} шт не раздувают закупку</div></div>
+        <div class="fact"><div class="f-l">Упущенный спрос учтён</div><div class="f-v">+${fmt(lostQ)} шт</div><div class="f-s">за 12 мес, когда товара не было</div></div>
+      </div>
       <div class="grid-2">
         <div class="card"><h3>Что заказывать: по группам товаров</h3><p class="c-desc">Количество позиций к заказу, из них критичных</p>
           ${hbars}
@@ -829,6 +940,133 @@
     bindTips($("#tab-calendar"));
   }
 
+  // ---------------- сценарии и бюджет ----------------
+  let scenCache = { key: null, val: null };
+  function scenarioStats() {
+    const key = JSON.stringify([state.p, state.sup, Object.keys(state.overrides).length]);
+    if (scenCache.key === key) return scenCache.val;
+    const base = DATA.skus.filter((sk) => state.sup === "all" || sk.sup === state.sup);
+    const val = {};
+    Object.keys(SCN).forEach((k) => {
+      const p = { ...state.p, scenario: k };
+      const rs = base.map((sk) => { const r = Engine.calc(sk, p); return { s: sk, r, final: r.qty }; });
+      const cov = Engine.priceCoverage(rs);
+      val[k] = {
+        order: rs.filter((x) => x.final > 0).length,
+        crit: rs.filter((x) => x.r.urgency === "critical").length,
+        today: rs.filter((x) => x.r.safeDay != null && x.r.safeDay <= 0).length,
+        deficit: rs.filter((x) => x.r.expectedDeficit).length,
+        units: rs.reduce((a, x) => a + x.final, 0),
+        value: cov.value, share: cov.share, priced: cov.priced, lines: cov.lines,
+      };
+    });
+    scenCache = { key, val };
+    return val;
+  }
+  function renderScenarios() {
+    const st = scenarioStats();
+    const keys = Object.keys(SCN);
+    const cur = state.p.scenario;
+    const row = (label, f, note = "") => `<tr><td>${label}${note ? `<div class="n muted" style="font-size:12px">${note}</div>` : ""}</td>${keys.map((k) => `<td class="num ${k === cur ? "cur" : ""}">${f(st[k])}</td>`).join("")}</tr>`;
+    const al = state.alloc;
+    const sumv = (l) => l.reduce((a, x) => a + x.final * x.s.pr, 0);
+    const li = (l) => l.slice(0, 6).map((x) => `<div class="list-row" data-open="${esc(x.s.id)}" style="cursor:pointer" tabindex="0"><span>${esc(x.s.n)}<br><span class="muted">${ST[x.r.status].label} · ${esc(x.s.id)}</span></span><span style="text-align:right;white-space:nowrap"><b class="num">${fmt(x.final)} шт</b>${Engine.hasPrice(x.s) ? `<br><span class="muted">${money(x.final * x.s.pr)}</span>` : `<br><span class="muted">нет цены</span>`}</span></div>`).join("") || '<div class="empty" style="padding:14px">Нет</div>';
+    $("#tab-scenarios").innerHTML = `
+      <div class="card" style="margin-bottom:16px">
+        <div style="display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;align-items:center">
+          <h3>Сравнение сценариев</h3>
+          <div class="seg" id="scenSeg2">${keys.map((k) => `<button class="${k === cur ? "active" : ""}" data-sc="${k}">${SCN[k].label}</button>`).join("")}</div>
+        </div>
+        <p class="c-desc">Одинаковые данные, разные допущения. Выбранный сценарий подсвечен и применяется ко всему сервису. Разница между сценариями — не «экономия»: для этого нужны проверенные маржа и стоимость хранения.</p>
+        <div class="table-wrap"><table class="cmp">
+          <thead><tr><th>Метрика</th>${keys.map((k) => `<th class="${k === cur ? "cur" : ""}">${SCN[k].label}</th>`).join("")}</tr></thead>
+          <tbody>
+            ${row("Допущения", (x) => "", "")}
+            <tr><td class="muted" style="font-size:12px">спрос · срок поставки · уровень сервиса A/B/C</td>${keys.map((k) => `<td class="${k === cur ? "cur" : ""}" style="font-size:12px">${SCN[k].demand ? (SCN[k].demand > 0 ? "+" : "−") + Math.abs(SCN[k].demand * 100) + "%" : "прогноз"} · ${SCN[k].lead_add_days ? "+" + SCN[k].lead_add_days + " дн" : "текущий"} · z ${SCN[k].z.A}/${SCN[k].z.B}/${SCN[k].z.C}</td>`).join("")}</tr>
+            ${row("SKU к заказу", (x) => fmt(x.order))}
+            ${row("Критические SKU", (x) => fmt(x.crit))}
+            ${row("Заказать сегодня", (x) => fmt(x.today), "безопасный день наступил или прошёл")}
+            ${row("Ожидаемый дефицит", (x) => fmt(x.deficit), "закончатся до прихода заказа, размещённого сегодня")}
+            ${row("Рекомендуемое количество, шт", (x) => fmt(x.units))}
+            ${row("Стоимость по известным ценам", (x) => (x.priced ? money(x.value) : "Нет данных"), "неполная сумма")}
+            ${row("Покрытие ценами", (x) => pct(x.share))}
+          </tbody></table></div>
+        <p class="muted" style="font-size:12px;margin:10px 0 0">Коэффициенты сценариев — демонстрационные допущения (engine/forecast.py → SCENARIOS), а не исторически доказанные вероятности. Ручные корректировки менеджера в сравнении не учитываются.</p>
+      </div>
+
+      <div class="card">
+        <h3>Приоритизация заказа при ограниченном бюджете</h3>
+        <p class="c-desc">Необязательно. Если бюджет не задан, ничего не оптимизируется. Порядок: «Дефицит сейчас» и «Просрочено» → ранняя дата окончания → категория A → больший дефицит. В бюджет входят только позиции с известной ценой; позиции без цены не считаются бесплатными и показываются отдельно.</p>
+        <div class="budget-row">
+          <label for="budgetIn">Доступный бюджет, ₸</label>
+          <input id="budgetIn" type="number" min="0" step="100000" placeholder="например, 10 000 000" value="${state.budget || ""}">
+          <button class="btn primary sm" id="budgetApply">Применить</button>
+          ${state.budget ? `<button class="btn sm" id="budgetClear">Сбросить</button>` : ""}
+        </div>
+        ${al ? `<div class="bstats">
+            <div class="fact main"><div class="f-l">Включено в бюджет</div><div class="f-v">${fmt(al.included.length)} поз.</div><div class="f-s">${money(al.spent)} из ${money(state.budget)}</div></div>
+            <div class="fact"><div class="f-l">Не поместилось</div><div class="f-v">${fmt(al.skipped.length)} поз.</div><div class="f-s">${money(sumv(al.skipped))}</div></div>
+            <div class="fact"><div class="f-l">Нет цены</div><div class="f-v">${fmt(al.noPrice.length)} поз.</div><div class="f-s">стоимость неизвестна</div></div>
+            <div class="fact ${al.criticalNoPrice.length ? "crit" : ""}"><div class="f-l">Критичные без цены</div><div class="f-v">${fmt(al.criticalNoPrice.length)} поз.</div><div class="f-s">остаются в предупреждениях</div></div>
+          </div>
+          <div class="grid-2">
+            <div><h4 style="margin:0 0 8px">Включено</h4><div class="list">${li(al.included)}</div></div>
+            <div><h4 style="margin:0 0 8px">Не поместилось</h4><div class="list">${li(al.skipped)}</div></div>
+            <div><h4 style="margin:0 0 8px">Критичные без цены — нужна цена или решение менеджера</h4><div class="list">${li(al.criticalNoPrice)}</div></div>
+          </div>
+          <p class="muted" style="font-size:12px">Метки «в бюджете / не поместилось / нет цены» также видны в таблице «Заказ поставщикам».</p>`
+        : `<div class="empty-state">Бюджет не задан — рекомендации показаны полностью, без ограничений.</div>`}
+      </div>`;
+    $$("#scenSeg2 button").forEach((b) => (b.onclick = () => setScenario(b.dataset.sc)));
+    $("#budgetApply").onclick = () => {
+      const v = Math.max(0, +$("#budgetIn").value || 0);
+      state.budget = v > 0 ? v : null; store.set("budget", state.budget); recompute(); render();
+    };
+    $("#budgetIn").onkeydown = (e) => { if (e.key === "Enter") $("#budgetApply").click(); };
+    if ($("#budgetClear")) $("#budgetClear").onclick = () => { state.budget = null; store.set("budget", null); recompute(); render(); };
+    $$("#tab-scenarios [data-open]").forEach((el) => { el.onclick = () => openDrawer(el.dataset.open); el.onkeydown = (e) => { if (e.key === "Enter") openDrawer(el.dataset.open); }; });
+  }
+
+  // ---------------- качество данных ----------------
+  function dataQualityHtml() {
+    const q = Engine.dataQuality(baseRows());
+    const cov = Engine.priceCoverage(baseRows());
+    const item = (v, title, text) => `<div class="dq-row"><div class="dq-v">${v}</div><div><b>${title}</b><div class="dq-t">${text}</div></div></div>`;
+    return `<div class="dq">
+      ${item(pct(q.priceShare), "Артикулы с ценой", `Для ${pct(cov.lines ? cov.missing / cov.lines : null)} позиций к заказу нет цены (${fmt(cov.missing)} из ${fmt(cov.lines)}). Количество рассчитано, но полный бюджет заказа определить нельзя. В выгрузке IEK нет себестоимости.`)}
+      ${item(pct(q.moqShare), "Артикулы с кратностью (MOQ)", "Где кратности нет в файле, принята 1 — заказ может не совпасть с упаковкой поставщика.")}
+      ${item(pct(q.etaShare), "Товар в пути с датой прихода", q.transitNoEta ? `${fmt(q.transitNoEta)} шт в пути без даты (файл SE) не считаются прибывшими: заказ по таким позициям может оказаться больше нужного. Нужны даты поступления.` : "У всего товара в пути есть дата прихода.")}
+      ${item(fmt(q.returns), "Артикулы с возвратами", "Отрицательные строки накладных в спрос не входят.")}
+      ${item(fmt(q.noHistory), "Без достаточной истории", `Меньше ${META.minHistory} мес. продаж или нулевой спрос — статус «Недостаточно данных», даты не рассчитываются.`)}
+      ${item(fmt(q.zeroStock), "С нулевым остатком", "При положительном спросе — статус «Дефицит сейчас».")}
+      ${item(fmt(q.badCodes.length), "Нестандартные коды 1С", q.badCodes.length ? `Например: ${q.badCodes.slice(0, 4).map(esc).join(", ")}. Проверьте сопоставление с 1С перед загрузкой.` : "Все коды в едином формате.")}
+    </div>`;
+  }
+
+  // ---------------- backtest ----------------
+  function backtestHtml() {
+    const bt = META.bt;
+    if (!bt) return "";
+    const p = (x) => (x == null ? "Нет данных" : `${fmt(x * 100, 1)}%`);
+    const sg = (x) => (x == null ? "Нет данных" : `${x > 0 ? "+" : x < 0 ? "−" : ""}${fmt(Math.abs(x) * 100, 1)}%`);
+    const r = (label, m, nv) => `<tr><td>${label}</td><td class="num">${fmt(m.n)}</td><td class="num"><b>${p(m.wape)}</b></td><td class="num">${nv ? p(nv.wape) : "—"}</td><td class="num">${sg(m.bias)}</td><td class="num hide-sm">${p(m.under)}</td><td class="num hide-sm">${p(m.over)}</td></tr>`;
+    return `<h2 class="sec" id="bt">Проверка прогноза на прошлом</h2>
+      <div class="card">
+        <p class="c-desc" style="margin-bottom:12px">Дата отсечения — 1 ${["", "января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"][+bt.cutoff.slice(5)]} ${bt.cutoff.slice(0, 4)}. Алгоритм видел только данные до этой даты (продажи, остатки, накладные, сезонность по полным годам) и спрогнозировал спрос на ${bt.horizon} мес. (${bt.period}). Прогноз сравнён с фактическими продажами. Для сравнения — простое среднее за 12 месяцев, как в ручном расчёте.</p>
+        <div class="bstats">
+          <div class="fact main"><div class="f-l">Ошибка прогноза (WAPE)</div><div class="f-v">${p(bt.overall.wape)}</div><div class="f-s">у среднего за 12 мес — ${p(bt.naive.wape)}</div></div>
+          <div class="fact"><div class="f-l">Смещение (bias)</div><div class="f-v">${sg(bt.overall.bias)}</div><div class="f-s">у среднего за 12 мес — ${sg(bt.naive.bias)} (${bt.naive.bias > 0 ? "завышает" : "занижает"})</div></div>
+          <div class="fact"><div class="f-l">Прогноз ниже факта</div><div class="f-v">${p(bt.overall.under)}</div><div class="f-s">артикулов; выше факта — ${p(bt.overall.over)}</div></div>
+        </div>
+        <div class="table-wrap"><table class="cmp"><thead><tr><th>Срез</th><th>SKU</th><th>WAPE</th><th>WAPE среднего</th><th>Bias</th><th class="hide-sm">Ниже факта</th><th class="hide-sm">Выше факта</th></tr></thead><tbody>
+          ${r("Все", bt.overall, bt.naive)}
+          ${Object.entries(bt.byAbc).map(([k, m]) => r(`Категория ${k}`, m, bt.naiveByAbc[k])).join("")}
+          ${Object.entries(bt.bySup).map(([k, m]) => r(esc(k), m, null)).join("")}
+        </tbody></table></div>
+        <p class="muted" style="font-size:12px;margin:10px 0 0">WAPE = Σ|прогноз − факт| / Σ факт. Bias = Σ(прогноз − факт) / Σ факт: плюс — завышение, минус — занижение. Для редких товаров (C) ошибка выше — это ожидаемо при штучных продажах. Проверка измеряет точность прогноза спроса и <b>не доказывает предотвращённые дефициты</b>: для этого нужна точная история ежедневных остатков и поступлений.</p>
+      </div>`;
+  }
+
   // ---------------- method tab ----------------
   function pickExamples() {
     const cand = rows.filter((x) => x.r.level > 5);
@@ -850,7 +1088,7 @@
       ["Уровень и тренд", "Средний спрос за 6 мес. без сезонности. Рост год к году ограничен −30…+50 %, чтобы один всплеск не раздул заказ."],
       ["Страховой запас", "z × σ × √(срок поставки + период пересмотра). z зависит от ABC-категории: A — 95 %, B — 90 %, C — 80 % уровень сервиса."],
       ["Заказ", "Прогноз + страховой запас − остаток − товар в пути, округление вверх до кратности поставщика. Срочность — по тому, хватит ли запаса до прихода поставки."],
-      ["Календарь остатка", "Остаток по дням на 6 месяцев: спрос с сезонностью минус, приходы товара в пути по датам плюс. «Заказать до» = день падения ниже страхового запаса − срок поставки."],
+      ["Календарь остатка", "Остаток по дням на 6 месяцев: минус спрос (месячный прогноз с сезонностью распределён по дням), плюс товар в пути — только с датой прихода. Последний безопасный день = дата окончания запаса − срок поставки − дни на согласование."],
     ];
     const checks = [
       ["Учёт всех источников данных", "История продаж, остатки, товар в пути, категории (ABC), прогноз прироста, кратность — каждый влияет на результат. Попробуйте выключить «Товар в пути».", ex.transit],
@@ -869,10 +1107,23 @@
           <div><h4>${i + 1}. ${t}</h4><p>${d}${x ? ` Пример: <b>${esc(x.s.n)}</b>.` : ""}</p></div>
           ${x ? `<button class="btn sm" data-open="${esc(x.s.id)}">Открыть пример</button>` : `<button class="btn sm" data-goto="orders">К заказу</button>`}
         </div>`).join("")}</div>
+      ${backtestHtml()}
+      <h2 class="sec">Качество данных</h2>
+      <div class="card">${dataQualityHtml()}</div>
+      <h2 class="sec">Надёжность поставщиков</h2>
+      <div class="card"><div class="grid-2">${Object.values(SUPS).map((v) => `<div><h4 style="margin:0 0 8px">${esc(v.name)}</h4>
+        <div class="empty-state">Недостаточно истории поставок. Добавьте плановую и фактическую даты приходов — сервис рассчитает среднюю задержку, P90 срока поставки, долю поставок вовремя и недопоставки, а страховой запас начнёт учитывать опоздания.</div></div>`).join("")}</div></div>
+      <h2 class="sec">Какие данные усилят расчёт</h2>
+      <div class="card"><div class="list">
+        <div class="list-row"><span><b>Клиентские резервы и подтверждённые заказы</b><br><span class="muted">вычитаются из свободного остатка; крупные известные заказы планируются отдельно</span></span><span class="muted">нет источника</span></div>
+        <div class="list-row"><span><b>Товары-заменители и семейства</b><br><span class="muted">аналог IEK ↔ Systeme Electric при дефиците</span></span><span class="muted">нет источника</span></div>
+        <div class="list-row"><span><b>Цены IEK и маржа</b><br><span class="muted">полная стоимость заказа, бюджет по всем позициям</span></span><span class="muted">нет источника</span></div>
+        <div class="list-row"><span><b>Даты прихода SE</b><br><span class="muted">учёт товара в пути в календаре остатка</span></span><span class="muted">нет в файле</span></div>
+      </div><p class="muted" style="font-size:12px;margin:10px 0 0">Пока источников нет, эти поля не участвуют в расчётах.</p></div>
       <h2 class="sec">Данные и ограничения</h2>
       <div class="card"><p style="margin:0;color:var(--text-2)">Данные ТОО «Электрокомплект» на ${META.asOf.split("-").reverse().join(".")}: помесячные продажи и остатки (янв 2024 — сен 2026), 248 тыс. строк расходных накладных, товар в пути, сезонность, кратность поставщиков.
       Сентябрь 2026 неполный — в прогнозе не используется, остаток на сегодня рассчитан с учётом продаж с начала месяца.
-      Данные клиентов не используются: разовый заказ определяется по номеру накладной. Автоматические тесты требований: <code>pytest</code> — 8 из 8 проходят.</p></div>`;
+      Данные клиентов не используются: разовый заказ определяется по номеру накладной. Автоматические тесты: <code>PYTHONPATH=. pytest -q</code> — требования ТЗ, календарь остатка, сценарии и сверка расчёта Python с браузером.</p></div>`;
     $$("#tab-method [data-open]").forEach((b) => b.addEventListener("click", () => openDrawer(b.dataset.open)));
     $$("#tab-method [data-goto]").forEach((b) => b.addEventListener("click", () => switchTab("orders")));
   }
@@ -881,7 +1132,7 @@
   function renderSupSeg() {
     const opts = [["all", "Все поставщики"], ...Object.entries(SUPS).map(([k, v]) => [k, v.name])];
     $("#supSeg").innerHTML = opts.map(([k, l]) => `<button role="tab" class="${state.sup === k ? "active" : ""}" data-s="${k}">${esc(l)}</button>`).join("");
-    $$("#supSeg button").forEach((b) => b.addEventListener("click", () => { state.sup = b.dataset.s; state.group = "all"; renderSupSeg(); renderGroupSel(); render(); }));
+    $$("#supSeg button").forEach((b) => b.addEventListener("click", () => { state.sup = b.dataset.s; state.group = "all"; renderSupSeg(); renderGroupSel(); recompute(); render(); }));
   }
   function renderGroupSel() {
     const gs = [...new Set(rows.filter((x) => state.sup === "all" || x.s.sup === state.sup).map((x) => x.s.g))].sort((a, b) => a.localeCompare(b, "ru"));
@@ -896,6 +1147,8 @@
   function render() {
     renderKpis();
     if (state.tab === "orders") { renderFilters(); renderOrders(); }
+    if (state.tab === "today") renderToday();
+    if (state.tab === "scenarios") renderScenarios();
     if (state.tab === "analytics") renderAnalytics();
     if (state.tab === "calendar") renderCalendar();
     if (state.tab === "method") renderMethod();
@@ -917,19 +1170,32 @@
     $("#q").addEventListener("input", (e) => { clearTimeout(qTimer); qTimer = setTimeout(() => { state.q = e.target.value; if (state.tab !== "orders") switchTab("orders"); else render(); }, 120); });
     $("#groupSel").addEventListener("change", (e) => { state.group = e.target.value; render(); });
     $("#abcSel").addEventListener("change", (e) => { state.abc = e.target.value; render(); });
+    $("#statusSel").addEventListener("change", (e) => { state.st = e.target.value; render(); });
+    $("#sortSel").value = state.sort;
     $("#sortSel").addEventListener("change", (e) => { state.sort = e.target.value; render(); });
     $("#onlyOrder").addEventListener("change", (e) => { state.onlyOrder = e.target.checked; if (state.onlyOrder && state.urg === "ok") state.urg = "all"; render(); });
     $$(".tab").forEach((b) => b.addEventListener("click", () => switchTab(b.dataset.tab)));
-    $("#exportBtn").addEventListener("click", () => { exportXlsx(); toast("Excel-файл сформирован"); });
+    $("#exportBtn").addEventListener("click", () => { exportXlsx(); toast("Excel сформирован. Поставщику ничего не отправлено"); });
     $("#paramsToggle").addEventListener("click", () => $("#params").classList.toggle("open"));
     $("#scrim").addEventListener("click", closeDrawer);
     document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeDrawer(); $("#modal").hidden = true; } });
     render();
     // прямые ссылки: #tab=analytics, #sku=<код 1С>
     const h = new URLSearchParams(location.hash.slice(1));
-    if (h.get("sup") && SUPS[h.get("sup")]) { state.sup = h.get("sup"); renderSupSeg(); renderGroupSel(); render(); }
+    if (h.get("scenario") && SCN[h.get("scenario")]) { state.p.scenario = h.get("scenario"); paramLabels(); recompute(); render(); }
+    if (h.get("budget")) { state.budget = +h.get("budget") || null; recompute(); render(); }
+    if (h.get("sup") && SUPS[h.get("sup")]) { state.sup = h.get("sup"); renderSupSeg(); renderGroupSel(); recompute(); render(); }
     if (h.get("tab")) switchTab(h.get("tab"));
     if (h.get("sku")) openDrawer(h.get("sku"));
+    if (h.get("sec")) document.getElementById(h.get("sec"))?.scrollIntoView();
   }
-  init();
+  try {
+    if (!window.DATA || !window.Engine && typeof Engine === "undefined") throw new Error("данные не загружены");
+    init();
+  } catch (err) {
+    console.error(err);
+    document.querySelector("main").innerHTML = `<div class="card" style="margin-top:20px"><h3>Не удалось загрузить данные</h3>
+      <p class="c-desc">Проверьте, что рядом с index.html есть файлы data.js и engine.js, или пересоберите данные командой <code>python -m engine.build</code>.</p>
+      <p class="muted" style="font-size:12px">${String(err && err.message || err).replace(/</g, "&lt;")}</p></div>`;
+  }
 })();

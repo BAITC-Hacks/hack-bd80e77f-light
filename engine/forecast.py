@@ -32,6 +32,23 @@ LEVEL_WINDOW = 6             # мес. для базового уровня
 TREND_CLIP = (-0.30, 0.50)   # ограничение роста год к году
 SERVICE_Z = {"A": 1.65, "B": 1.28, "C": 0.84}   # 95 % / 90 % / 80 % уровень сервиса
 MAD_SCALE = 1.4826
+APPROVAL_BUFFER_DAYS = 3     # дней на согласование заказа внутри компании
+PROJECTION_DAYS = 180        # горизонт календаря остатка
+MIN_HISTORY_MONTHS = 3       # меньше — «Недостаточно данных»
+
+# Сценарии — демонстрационные допущения (не вероятности). Меняются в одном месте;
+# web/engine.js получает их из data.js, поэтому Python и браузер считают одинаково.
+SCENARIOS = {
+    "econ": {"label": "Экономный", "demand": -0.10, "lead_add_days": 0,
+             "z": {"A": 1.28, "B": 0.84, "C": 0.52},
+             "note": "спрос −10 %, срок поставки без изменений, уровень сервиса ниже: A 90 % · B 80 % · C 70 %"},
+    "base": {"label": "Базовый", "demand": 0.0, "lead_add_days": 0,
+             "z": dict(SERVICE_Z),
+             "note": "текущий прогноз, текущий срок, уровень сервиса по ABC: A 95 % · B 90 % · C 80 %"},
+    "protect": {"label": "Защитный", "demand": 0.20, "lead_add_days": 15,
+                "z": {"A": 2.05, "B": 1.65, "C": 1.28},
+                "note": "спрос +20 %, поставка на 15 дней дольше, уровень сервиса выше: A 98 % · B 95 % · C 90 %"},
+}
 
 
 @dataclass
@@ -44,6 +61,8 @@ class Params:
     use_season: bool = True      # учитывать сезонность
     use_trend: bool = True       # учитывать тренд
     use_transit: bool = True     # учитывать товар в пути
+    scenario: str = "base"       # econ / base / protect
+    approval_buffer: int = APPROVAL_BUFFER_DAYS
 
 
 # ------------------------------------------------------------------------------------------
@@ -253,7 +272,7 @@ def analyze_sku(code: str, raw: np.ndarray, stock: np.ndarray, oneoff_by_month: 
 # 6. Рекомендация
 # ------------------------------------------------------------------------------------------
 def horizon_months(as_of: date, horizon: float) -> list[tuple[int, float]]:
-    """[(номер месяца 1..12, доля месяца)] на горизонт `horizon` мес. начиная с as_of."""
+    """[(абс. номер месяца, доля месяца)] на горизонт `horizon` мес. начиная с as_of."""
     out, left = [], horizon
     y, m = as_of.year, as_of.month
     frac = 1 - (as_of.day - 1) / 30.0
@@ -268,122 +287,190 @@ def horizon_months(as_of: date, horizon: float) -> list[tuple[int, float]]:
     return out
 
 
-def forecast_path(est: dict, S: np.ndarray, anchor_abs: float, as_of: date, horizon: float,
-                  p: Params) -> list[tuple[int, float, float]]:
-    """Прогноз спроса по месяцам горизонта: [(абс. номер месяца, доля, спрос за долю)]."""
-    g = est["growth"] if p.use_trend else 0.0
+def variant_key(p: Params) -> str:
+    return f"{int(p.use_oneoff)}{int(p.use_restore)}{int(p.use_season)}"
+
+
+def monthly_demand(sku: dict, p: Params, anchor: float, abs_month: int) -> float:
+    """Прогноз спроса на календарный месяц (шт/мес) с сезонностью, трендом, приростом и сценарием."""
+    level, growth, _sd = sku["v"][variant_key(p)][:3]
+    g = growth if p.use_trend else 0.0
     r = (1 + g) ** (1 / 12) - 1
-    out = []
-    for abs_m, frac in horizon_months(as_of, horizon):
-        s = S[abs_m % 12] if p.use_season else 1.0
-        q = est["level"] * s * (1 + r) ** (abs_m - anchor_abs) * (1 + p.growth)
-        out.append((abs_m, frac, q * frac))
-    return out
+    s = sku["S"][abs_month % 12] if p.use_season else 1.0
+    sc = SCENARIOS[p.scenario]
+    return level * s * (1 + r) ** (abs_month - anchor) * (1 + p.growth) * (1 + sc["demand"])
 
 
-def recommend(a: SkuAnalysis, sku: dict, transit: list[dict], months: list[pd.Period],
-              p: Params, as_of: date = AS_OF) -> dict:
-    est = a.variants[(p.use_oneoff, p.use_restore, p.use_season)]
-    n = len(a.raw)
-    last = months[n - 1]
-    anchor = last.year * 12 + last.month - 1 - (LEVEL_WINDOW - 1) / 2
-    H = p.lead_time + p.review
-    path = forecast_path(est, a.S, anchor, as_of, H, p)
+def days_in_month(abs_month: int) -> int:
+    y, m = divmod(abs_month, 12)
+    return (date(y + (m + 1) // 12, (m + 1) % 12 + 1, 1) - date(y, m + 1, 1)).days
+
+
+def split_transit(tr: list, as_of: date, horizon_days: int) -> dict:
+    """Товар в пути: подтверждённый (есть ETA в пределах горизонта), поздний и без даты.
+
+    Без даты прихода товар НЕ считается прибывшим вовремя — он показывается отдельно.
+    """
+    by_day, confirmed, late, no_eta = {}, 0.0, 0.0, 0.0
+    for doc, qty, eta in tr:
+        if not eta:
+            no_eta += qty
+            continue
+        d = max(0, (date.fromisoformat(eta) - as_of).days)
+        if d <= horizon_days:
+            confirmed += qty
+        else:
+            late += qty
+        by_day[d] = by_day.get(d, 0.0) + qty
+    return {"by_day": by_day, "confirmed": confirmed, "late": late, "no_eta": no_eta}
+
+
+def plan(sku: dict, p: Params, anchor: float, as_of: date = AS_OF) -> dict:
+    """Полный расчёт по артикулу: количество, календарь остатка, дата окончания и безопасный день заказа.
+
+    `sku` — словарь в формате web/data.js (v, S, st, tr, moq, abc, nh). Та же функция
+    реализована в web/engine.js; согласованность проверяет tests/test_parity.py.
+    """
+    sc = SCENARIOS[p.scenario]
+    level, _g, sd = sku["v"][variant_key(p)][:3]
+    lead_days = round(p.lead_time * 30) + sc["lead_add_days"]
+    L = lead_days / 30
+    H = L + p.review
+    path = [(am, f, monthly_demand(sku, p, anchor, am) * f) for am, f in horizon_months(as_of, H)]
     demand_h = sum(q for *_, q in path)
-    demand_lt = sum(q for *_, q in forecast_path(est, a.S, anchor, as_of, p.lead_time, p))
-    avg_s = np.mean([a.S[m % 12] for m, *_ in path]) if p.use_season else 1.0
-    z = SERVICE_Z.get(sku.get("abc", "C"), 0.84)
-    safety = z * est["sd"] * avg_s * math.sqrt(H)
-    stock = max(float(sku.get("stock") or 0), 0.0)
-    in_transit = sum(t["qty"] for t in transit) if p.use_transit else 0.0
-    need = demand_h + safety - stock - in_transit
+    demand_l = sum(monthly_demand(sku, p, anchor, am) * f for am, f in horizon_months(as_of, L))
+    avg_s = float(np.mean([sku["S"][am % 12] for am, *_ in path])) if p.use_season else 1.0
+    z = sc["z"].get(sku.get("abc", "C"), 0.84)
+    safety = z * sd * (1 + sc["demand"]) * avg_s * math.sqrt(H)
+    stock = max(float(sku.get("st") or 0), 0.0)
+    tr = split_transit(sku.get("tr", []) if p.use_transit else [], as_of, round(H * 30))
+    need = demand_h + safety - stock - tr["confirmed"]
     moq = max(float(sku.get("moq") or 1), 1.0)
     qty = math.ceil(need / moq - 1e-9) * moq if need > 0.5 else 0
+    monthly = demand_h / H if H else 0.0
 
-    monthly_now = demand_h / H if H else 0
-    if qty > 0 and stock + in_transit < demand_lt and demand_lt >= 1:
+    # календарь остатка по дням
+    arrival_day = p.approval_buffer + lead_days          # заказ, размещённый сегодня, придёт
+    s0 = stock
+    stockout = None
+    deficit = deficit_lead = 0.0
+    for i in range(PROJECTION_DAYS + 1):
+        day = date.fromordinal(as_of.toordinal() + i)
+        am = day.year * 12 + day.month - 1
+        daily = monthly_demand(sku, p, anchor, am) / days_in_month(am) if level > 0 else 0.0
+        s0 += tr["by_day"].get(i, 0.0)
+        short = max(0.0, daily - s0)
+        deficit += short
+        if i < arrival_day:
+            deficit_lead += short
+        s0 = max(s0 - daily, 0.0)
+        if stockout is None and daily > 0 and s0 <= 0:
+            stockout = i
+
+    enough_history = level > 0 and sku.get("nh", MIN_HISTORY_MONTHS) >= MIN_HISTORY_MONTHS
+    safe_day = None if stockout is None or not enough_history else stockout - lead_days - p.approval_buffer
+    if not enough_history:
+        status = "nodata"
+    elif stock <= 0:
+        status = "now"
+    elif safe_day is None:
+        status = "later"
+    elif safe_day < 0:
+        status = "overdue"
+    elif safe_day == 0:
+        status = "today"
+    elif safe_day <= 7:
+        status = "week"
+    else:
+        status = "later"
+
+    in_pipe = stock + tr["confirmed"]
+    if qty > 0 and in_pipe < demand_l and demand_l >= 1:
         urgency = "critical"
-    elif qty > 0 and stock + in_transit < demand_lt + safety:
+    elif qty > 0 and in_pipe < demand_l + safety:
         urgency = "soon"
     elif qty > 0:
         urgency = "planned"
     else:
         urgency = "ok"
-    excess = max(0.0, stock + in_transit - (6 * monthly_now + safety))
     return {
-        "qty": int(qty), "need": need, "demand_h": demand_h, "demand_lt": demand_lt,
-        "safety": safety, "stock": stock, "transit": in_transit, "urgency": urgency,
-        "level": est["level"], "growth": est["growth"] if p.use_trend else 0.0, "sd": est["sd"],
-        "monthly": monthly_now, "cover_months": (stock / monthly_now) if monthly_now > 0 else None,
-        "excess": excess, "z": z,
+        "qty": int(qty), "need": need, "demand_h": demand_h, "demand_lt": demand_l, "safety": safety,
+        "stock": stock, "transit": tr["confirmed"], "transit_no_eta": tr["no_eta"], "transit_late": tr["late"],
+        "urgency": urgency, "status": status, "level": level, "growth": sku["v"][variant_key(p)][1] if p.use_trend else 0.0,
+        "sd": sd, "z": z, "monthly": monthly, "lead_days": lead_days, "H": H, "moq": moq,
+        "stockout_day": stockout if enough_history else None, "safe_day": safe_day,
+        "arrival_day": arrival_day, "deficit": deficit, "deficit_lead": deficit_lead,
+        "expected_deficit": enough_history and stockout is not None and stockout < arrival_day,
+        "excess": max(0.0, stock + tr["confirmed"] - (6 * monthly + safety)),
     }
 
 
+def sku_payload(a: "SkuAnalysis", moq: float, stock: float, abc: str, transit: list[dict]) -> dict:
+    """Минимальный словарь артикула для plan() — тот же формат, что в web/data.js."""
+    return {
+        "v": {f"{int(o)}{int(r)}{int(se)}": [e["level"], e["growth"], e["sd"]]
+              for (o, r, se), e in a.variants.items()},
+        "S": [float(x) for x in a.S], "st": float(stock or 0), "moq": float(moq or 1), "abc": abc,
+        "nh": int(a.active.sum()),
+        "tr": [[t.get("doc", ""), float(t["qty"]), t["eta"].isoformat() if t.get("eta") else None] for t in transit],
+    }
+
+
+def anchor_for(months: list[pd.Period], n: int) -> float:
+    last = months[n - 1]
+    return last.year * 12 + last.month - 1 - (LEVEL_WINDOW - 1) / 2
+
+
+def recommend(a: SkuAnalysis, sku: dict, transit: list[dict], months: list[pd.Period],
+              p: Params, as_of: date = AS_OF) -> dict:
+    payload = sku_payload(a, sku.get("moq"), sku.get("stock"), sku.get("abc", "C"), transit)
+    return plan(payload, p, anchor_for(months, len(a.raw)), as_of)
+
+
 def stock_projection(a: SkuAnalysis, r: dict, transit: list[dict], months: list[pd.Period], p: Params,
-                     order_qty: float = 0, days: int = 180, as_of: date = AS_OF) -> dict:
-    """Календарь остатка: остаток по дням без нового заказа и с заказом, размещённым сегодня.
-
-    Возвращает день, когда товар закончится, и «заказать до» — последний день, когда заказ
-    ещё успевает прийти раньше, чем остаток опустится ниже страхового запаса.
-    """
-    est = a.variants[(p.use_oneoff, p.use_restore, p.use_season)]
-    g = est["growth"] if p.use_trend else 0.0
-    rr = (1 + g) ** (1 / 12) - 1
-    last = months[len(a.raw) - 1]
-    anchor = last.year * 12 + last.month - 1 - (LEVEL_WINDOW - 1) / 2
-    lead_days = round(p.lead_time * 30)
-    inbound: dict[int, float] = {}
-    if p.use_transit:
-        for t in transit:
-            d = max(0, (t["eta"] - as_of).days) if t.get("eta") else round(lead_days / 2)
-            inbound[d] = inbound.get(d, 0) + t["qty"]
-    s0 = s1 = r["stock"]
-    out0 = below = None
-    deficit = 0.0
-    for i in range(days + 1):
-        day = pd.Timestamp(as_of) + pd.Timedelta(days=i)
-        am = day.year * 12 + day.month - 1
-        s = a.S[am % 12] if p.use_season else 1.0
-        daily = est["level"] * s * (1 + rr) ** (am - anchor) * (1 + p.growth) / day.days_in_month
-        s0 += inbound.get(i, 0); s1 += inbound.get(i, 0)
-        if i == lead_days:
-            s1 += order_qty
-        deficit += max(0.0, daily - max(s0, 0))
-        s0, s1 = max(s0 - daily, 0), max(s1 - daily, 0)
-        if daily > 0:
-            if out0 is None and s0 <= 0:
-                out0 = i
-            if below is None and s0 < max(r["safety"], daily):
-                below = i
-    return {"stockout_day": out0, "order_by_day": None if below is None else below - lead_days,
-            "deficit": deficit}
+                     order_qty: float = 0, days: int = PROJECTION_DAYS, as_of: date = AS_OF) -> dict:
+    """Совместимость: день окончания запаса и безопасный день заказа из plan()."""
+    return {"stockout_day": r["stockout_day"], "order_by_day": r["safe_day"], "deficit": r["deficit"]}
 
 
-def explain(r: dict, a: SkuAnalysis, sku: dict, p: Params, months: list[pd.Period]) -> str:
-    """Текстовое обоснование рекомендованного количества."""
-    parts = [f"Регулярный спрос ≈ {r['level']:.0f} {sku.get('unit', 'шт')}/мес"]
-    n_one = int((a.oneoff_by_month > 0).sum())
-    if p.use_oneoff and n_one:
-        parts.append(f"исключены разовые заказы ({a.oneoff_by_month.sum():.0f} шт в {n_one} мес.)")
-    lost = float((a.restored - a.clean)[-12:].sum())
-    if p.use_restore and lost > 0.5:
-        parts.append(f"восстановлен упущенный спрос при отсутствии товара (+{lost:.0f} за 12 мес.)")
-    if p.use_trend and abs(r["growth"]) >= 0.05:
-        parts.append(f"тренд {r['growth']:+.0%} г/г")
-    if p.growth:
-        parts.append(f"прогноз прироста {p.growth:+.0%}")
-    if p.use_season:
-        parts.append(f"сезонность на горизонте ×{r['demand_h'] / max(r['level'] * (p.lead_time + p.review), 1e-9):.2f}"
-                     if r["level"] > 0 else "сезонность учтена")
-    head = "; ".join(parts) + "."
-    calc = (f" Потребность на {p.lead_time + p.review:g} мес. = {r['demand_h']:.0f} + страховой запас "
-            f"{r['safety']:.0f} − остаток {r['stock']:.0f} − в пути {r['transit']:.0f} = {r['need']:.0f}")
+def forecast_path(est: dict, S, anchor_abs: float, as_of: date, horizon: float,
+                  p: Params) -> list[tuple[int, float, float]]:
+    """Прогноз спроса по месяцам горизонта: [(абс. номер месяца, доля, спрос за долю)]."""
+    sku = {"v": {variant_key(p): [est["level"], est["growth"], est["sd"]]}, "S": list(S)}
+    return [(am, f, monthly_demand(sku, p, anchor_abs, am) * f) for am, f in horizon_months(as_of, horizon)]
+
+
+STATUS_LABEL = {"now": "Дефицит сейчас", "overdue": "Просрочено", "today": "Сегодня",
+                "week": "На этой неделе", "later": "Позже", "nodata": "Недостаточно данных"}
+
+
+def fmt_day(as_of: date, d: int | None) -> str:
+    return "Нет данных" if d is None else date.fromordinal(as_of.toordinal() + d).strftime("%d.%m.%Y")
+
+
+def explain(r: dict, a: SkuAnalysis, sku: dict, p: Params, months: list[pd.Period], as_of: date = AS_OF) -> str:
+    """Короткое объяснение рекомендации простыми словами и числами."""
+    if r["status"] == "nodata":
+        return "Недостаточно истории продаж для прогноза (меньше 3 месяцев или нулевой спрос)."
+    f = lambda x: f"{x:,.0f}".replace(",", " ")
+    t = f"При спросе {f(r['monthly'])} шт./мес. и остатке {f(r['stock'])} шт."
+    if r["transit"]:
+        t += f" (+{f(r['transit'])} в пути)"
+    t += (f" товар закончится примерно {fmt_day(as_of, r['stockout_day'])}." if r["stockout_day"] is not None
+          else f" запаса хватит больше чем на {PROJECTION_DAYS // 30} мес.")
+    if r["safe_day"] is not None:
+        t += f" Поставка {r['lead_days']} дн. + {p.approval_buffer} дн. на согласование"
+        t += (f": последний безопасный день был {fmt_day(as_of, r['safe_day'])} ({-r['safe_day']} дн. назад) — "
+              "заказывать нужно немедленно." if r["safe_day"] < 0
+              else f": заказ нужно разместить не позднее {fmt_day(as_of, r['safe_day'])}.")
     if r["qty"] > 0:
-        moq = sku.get("moq") or 1
-        calc += f" → кратность {moq:g} → заказ {r['qty']}."
+        t += (f" Рекомендуется {f(r['qty'])} шт.: прогноз {f(r['demand_h'])} + страховой {f(r['safety'])} − остаток "
+              f"{f(r['stock'])} − в пути {f(r['transit'])} = {f(r['need'])}, округлено до кратности {f(r['moq'])}.")
     else:
-        calc += " → заказ не нужен."
-    return head + calc
+        t += " Заказ сейчас не нужен."
+    if r["transit_no_eta"]:
+        t += f" В пути без даты прихода {f(r['transit_no_eta'])} шт. — в расчёте не учтены, уточните ETA."
+    return t
 
 
 # ------------------------------------------------------------------------------------------
@@ -447,6 +534,7 @@ def run_supplier(sd: SupplierData, as_of: date = AS_OF) -> dict:
     skus["stock_now"] = skus["stock_now"].fillna(fallback)
     skus["abc"] = abc_by_frequency(sd.lines, skus.index, as_of)
     skus["group"] = skus["name"].map(product_group)
+    skus["price"] = skus["price"].where(skus["price"] > 0)   # цена 0 — это «нет цены», а не бесплатный товар
     transit = {c: g.to_dict("records") for c, g in sd.transit.groupby("code")}
 
     analyses = {}
@@ -476,6 +564,9 @@ def build_orders(res: dict, p: Params | None = None, as_of: date = AS_OF) -> pd.
             "Группа": s["group"], "ABC": s["abc"], "Остаток": r["stock"], "В пути": r["transit"],
             "Спрос/мес": round(r["monthly"], 1), "Страховой запас": round(r["safety"], 1),
             "Кратность": s["moq"], "Рекомендуемый заказ": r["qty"], "Срочность": r["urgency"],
-            "Цена": s["price"], "Обоснование": explain(r, a, {"moq": s["moq"]}, p, res["hist"]),
+            "Статус": STATUS_LABEL[r["status"]], "Закончится": fmt_day(as_of, r["stockout_day"]),
+            "Заказать до": fmt_day(as_of, r["safe_day"]),
+            "Цена": s["price"] if s["price"] and s["price"] > 0 else None,
+            "Обоснование": explain(r, a, {"moq": s["moq"]}, p, res["hist"], as_of),
         })
     return pd.DataFrame(rows)
