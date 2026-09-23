@@ -155,35 +155,8 @@ python3 -m http.server 8000 --directory web   # открыть http://localhost:
 | Мониторинг | **GitHub Actions** + `scripts/check_site.js` | проверка сайта каждые 3 часа |
 
 ```mermaid
-flowchart TD
-    subgraph SRC["Выгрузки 1С партнёра"]
-        direction LR
-        S1["Продажи по месяцам"]
-        S2["Накладные"]
-        S3["Остатки"]
-        S4["Товар в пути"]
-        S5["Сезонность и MOQ"]
-    end
-    subgraph ENG["Python: engine/"]
-        L["loaders.py<br/>чтение и нормализация"]
-        F["forecast.py<br/>выбросы, stockout, сезонность,<br/>тренд, заказ, календарь"]
-        B["build.py · backtest.py · coverage.py"]
-    end
-    subgraph WEB["Сайт: web/"]
-        D["data.js<br/>рассчитанные данные"]
-        J["engine.js<br/>мгновенный пересчёт"]
-        UI["app.js<br/>дашборд и заказ"]
-    end
-    subgraph OUT["Результат"]
-        direction LR
-        O1["Дашборд"]
-        O2["Excel и CSV для 1С"]
-        O3["WhatsApp · Telegram · почта"]
-    end
-    SRC --> L --> F --> B --> D --> J --> UI
-    UI --> O1 & O2 & O3
-    T["pytest: 32 теста"] -.проверяет.-> F
-    T -.сверяет.-> J
+flowchart LR
+    A["Выгрузки 1С"] --> B["Расчёт<br/>Python"] --> C["Сайт"] --> D["Заказ: Excel · 1С · WhatsApp"]
 ```
 
 ## ✅ Как проверить решение
