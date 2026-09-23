@@ -8,6 +8,10 @@
 
 Заказчик: **ТОО «Электрокомплект» (ekt.kz)** · Команда: **Light** · **HACKALEM AI 2026**
 
+## 🌐 [Открыть сервис: umny-zakup.vercel.app](https://umny-zakup.vercel.app)
+
+Работает круглосуточно в браузере — без установки и регистрации, на компьютере и телефоне.
+
 [![Поставщики](https://img.shields.io/badge/Поставщики-IEK_и_Systeme_Electric-1677FF?style=for-the-badge)](#-что-мы-создали)
 [![Экспорт](https://img.shields.io/badge/Результат-Excel-217346?style=for-the-badge&logo=microsoftexcel&logoColor=white)](#-что-получает-менеджер)
 [![Решение принимает человек](https://img.shields.io/badge/Контроль-решение_за_человеком-F59E0B?style=for-the-badge)](#-безопасность)
@@ -404,7 +408,9 @@ hack-bd80e77f-light/
 
 ## Как запустить
 
-Быстрее всего — открыть `web/index.html` в браузере: данные уже собраны, сервер не нужен.
+Онлайн-версия: **https://umny-zakup.vercel.app** — статический сайт на Vercel (CDN), работает круглосуточно и не зависит от компьютера разработчика. Поисковая индексация отключена (`noindex`), так как в сервисе коммерческие данные партнёра.
+
+Локально — открыть `web/index.html` в браузере: данные уже собраны, сервер не нужен.
 
 Пересчитать на новых выгрузках 1С и запустить локально:
 
@@ -428,6 +434,12 @@ python3 -m http.server 8000 --directory web
 PYTHONPATH=. pytest -q      # 27 passed
 ```
 
+Обновить онлайн-версию после пересчёта данных:
+
+```bash
+npx vercel deploy --prod    # публикует папку web/ (настройки — vercel.json)
+```
+
 </details>
 
 ---
@@ -435,6 +447,8 @@ PYTHONPATH=. pytest -q      # 27 passed
 <div align="center">
 
 ### Точный заказ — это товар на полке, деньги в обороте и продажа, которую компания не потеряла.
+
+## 🌐 [Открыть сервис: umny-zakup.vercel.app](https://umny-zakup.vercel.app)
 
 Создано командой **Light** для **ТОО «Электрокомплект»** на **HACKALEM AI 2026**
 
