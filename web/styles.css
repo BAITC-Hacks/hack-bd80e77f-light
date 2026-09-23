@@ -338,6 +338,29 @@ body.lock { overflow: hidden; }
 @media (max-width: 1000px) { .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; } .dash { grid-template-columns: 1fr; } }
 @media (max-width: 600px) { .kpi .k-value { font-size: 28px !important; } }
 
+/* ---------- заказ поставщику ---------- */
+.order-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-bottom: 16px; }
+.order-card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 14px; border-top: 4px solid var(--accent); }
+.oc-top { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+.oc-sup { font-size: 18px; font-weight: 700; letter-spacing: -.01em; }
+.oc-nums { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.oc-nums div { display: flex; flex-direction: column; }
+.oc-nums b { font-size: 22px; font-weight: 700; letter-spacing: -.01em; }
+.oc-nums span { font-size: 12px; color: var(--text-3); }
+.oc-btn { justify-content: center; padding: 11px 16px; font-size: 14.5px; }
+.order-steps { background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+.send-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.btn.share.wa { background: #1faa53; border-color: #1faa53; color: #fff; }
+.btn.share.tg { background: #2a9ed8; border-color: #2a9ed8; color: #fff; }
+.step-done { display: flex; align-items: center; gap: 8px; color: var(--good); font-weight: 600; margin-bottom: 10px; flex-wrap: wrap; }
+.step-done svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 2.5; }
+.hero-say { border-radius: 12px; padding: 14px 16px; font-size: 16px; line-height: 1.5; background: var(--surface-2); border-left: 5px solid var(--good); }
+.hero-say b.big { font-size: 20px; letter-spacing: -.01em; }
+.hero-say.crit { background: var(--crit-soft); border-left-color: var(--crit); }
+.hero-say.warn { background: var(--warn-soft); border-left-color: var(--warn); }
+.hero-say.none { border-left-color: var(--line-strong); }
+@media (max-width: 600px) { .oc-nums b { font-size: 18px; } }
+
 /* ---------- drawer ---------- */
 .scrim { position: fixed; inset: 0; background: rgba(10, 10, 15, .32); z-index: 40; animation: fade .15s; }
 .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(760px, 100vw); background: var(--surface); z-index: 50; box-shadow: var(--shadow-lg); transform: translateX(100%); transition: transform .22s cubic-bezier(.2,.8,.2,1); overflow-y: auto; outline: none; }

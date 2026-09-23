@@ -156,6 +156,7 @@
       if (state.abc !== "all" && s.abc !== state.abc) return false;
       if (!ignoreUrg && state.urg !== "all" && r.urgency !== state.urg) return false;
       if (state.st !== "all" && r.status !== state.st) return false;
+      if (state.stSet && !state.stSet.includes(r.status)) return false;
       if (state.deficitOnly && !r.expectedDeficit) return false;
       if (state.win && !WINDOWS.find((w) => w.k === state.win).test(r.orderByDay)) return false;
       if (state.onlyOrder && !(final > 0) && !(state.urg === "ok")) return false;
@@ -188,10 +189,14 @@
     const deficit = base.filter((x) => x.r.expectedDeficit);
     const crit = base.filter((x) => x.r.urgency === "critical");
     const cov = Engine.priceCoverage(base);
+    // четыре показателя не пересекаются: нет на складе + срок наступил = «заказать сегодня»
+    const noStock = today.filter((x) => x.r.status === "now");
+    const due = today.filter((x) => x.r.status !== "now");
+    const week = base.filter((x) => x.final > 0 && x.r.status === "week");
     const cards = [
-      { label: "Заказать сегодня", tone: "crit", ico: "clock", value: fmt(today.length), sub: "срок заказа наступил", act: () => setFilter({ urg: "all", st: "all", win: "now", onlyOrder: true, sort: "action" }) },
-      { label: "Ожидаемый дефицит", tone: "crit", ico: "alert", value: fmt(deficit.length), sub: "закончатся до прихода поставки", act: () => setFilter({ urg: "all", st: "all", win: null, onlyOrder: false, sort: "action", deficitOnly: true }) },
-      { label: "Критические позиции", tone: "warn", ico: "box", value: fmt(crit.length), sub: "не хватит на срок поставки", act: () => setFilter({ urg: "critical", st: "all", win: null, onlyOrder: true }) },
+      { label: "Нет на складе", tone: "crit", ico: "alert", value: fmt(noStock.length), sub: "спрос есть, товара нет — заказать немедленно", act: () => setFilter({ urg: "all", st: "now", win: null, onlyOrder: true, sort: "action" }) },
+      { label: "Срок заказа наступил", tone: "crit", ico: "clock", value: fmt(due.length), sub: `товар ещё есть, но заказ нужен сегодня · всего сегодня ${fmt(today.length)}`, act: () => setFilter({ urg: "all", st: "all", win: null, onlyOrder: true, sort: "action", stSet: ["overdue", "today"] }) },
+      { label: "Заказать на этой неделе", tone: "warn", ico: "box", value: fmt(week.length), sub: "последний безопасный день в ближайшие 7 дней", act: () => setFilter({ urg: "all", st: "week", win: null, onlyOrder: true, sort: "action" }) },
       { label: "Стоимость заказа", tone: "plan", ico: "coin", value: cov.priced ? money(cov.value) : "Нет данных", sub: `неполная: цены у ${pct(cov.share)} позиций`, bar: cov.share, act: () => switchTab("method") },
     ];
     $("#kpis").innerHTML = cards.map((c, i) => `
@@ -259,6 +264,129 @@
     });
     return svg + "</svg>";
   }
+
+  // ---------------- заказ поставщику: проверить → согласовать → отправить ----------------
+  const SCOPES = {
+    today: ["Сегодня", "нет на складе и срок заказа наступил", (x) => Engine.isOrderToday(x)],
+    week: ["+ эта неделя", "сегодня и ближайшие 7 дней", (x) => Engine.isOrderToday(x) || (x.final > 0 && x.r.status === "week")],
+    all: ["Весь заказ", "все рекомендованные позиции", (x) => x.final > 0],
+  };
+  let sheet = { k: null, scope: "today" };
+  const orderLines = (k, scope) => rows.filter((x) => x.s.sup === k && SCOPES[scope][2](x)).sort(Engine.actionCompare);
+  const orderFile = (k) => `Заказ_${SUPS[k].name.replace(/\s+/g, "_")}_${META.asOf}.xlsx`;
+
+  function orderSummary(k, lines) {
+    const cov = Engine.priceCoverage(lines);
+    const units = lines.reduce((a, x) => a + x.final, 0);
+    const ap = state.approved[k];
+    const head = [
+      `Заказ поставщику ${SUPS[k].name} от ${new Date().toLocaleDateString("ru-RU")}`,
+      `Позиций: ${fmt(lines.length)}, штук: ${fmt(units)}`,
+      cov.priced ? `Сумма по себестоимости (известные цены): ${money(cov.value)}` : null,
+      ap ? `Согласовано: ${ap.at}` : null,
+    ].filter(Boolean);
+    const top = lines.slice(0, 15).map((x, i) => `${i + 1}. ${x.s.art || x.s.id} — ${x.s.n} — ${fmt(x.final)} шт`);
+    if (lines.length > 15) top.push(`…и ещё ${fmt(lines.length - 15)} позиций — в файле Excel`);
+    return [...head, "", ...top, "", "Полный заказ — в файле Excel."].join("\n");
+  }
+
+  function openOrderSheet(k, scope = sheet.scope) {
+    sheet = { k, scope };
+    openId = null;
+    const lines = orderLines(k, scope);
+    const cov = Engine.priceCoverage(lines);
+    const units = lines.reduce((a, x) => a + x.final, 0);
+    const crit = lines.filter((x) => ST[x.r.status].rank <= 1).length;
+    const ap = state.approved[k];
+    const d = $("#drawer");
+    d.innerHTML = `
+      <div class="d-head"><div>
+          <div class="muted" style="font-size:12.5px;margin-bottom:4px">Заказ поставщику · шаг ${ap ? "3 из 3: отправка" : "1–2 из 3: проверка и согласование"}</div>
+          <h2>${esc(SUPS[k].name)}</h2>
+          <div class="seg" style="margin-top:10px" role="tablist">${Object.entries(SCOPES).map(([key, [l]]) => `<button class="${key === scope ? "active" : ""}" data-scope="${key}">${l}</button>`).join("")}</div>
+        </div>
+        <button class="d-close" aria-label="Закрыть"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+      <div class="d-body">
+        <div class="facts">
+          <div class="fact main"><div class="f-l">Позиций</div><div class="f-v">${fmt(lines.length)}</div><div class="f-s">${esc(SCOPES[scope][1])}</div></div>
+          <div class="fact"><div class="f-l">Штук</div><div class="f-v">${fmt(units)}</div></div>
+          <div class="fact ${crit ? "crit" : ""}"><div class="f-l">Товара нет или просрочено</div><div class="f-v">${fmt(crit)}</div></div>
+          <div class="fact"><div class="f-l">Сумма</div><div class="f-v">${cov.priced ? money(cov.value) : "Нет данных"}</div><div class="f-s">${cov.missing ? `цены у ${fmt(cov.priced)} из ${fmt(cov.lines)} позиций` : "по себестоимости"}</div></div>
+        </div>
+        <div class="order-steps">
+          ${ap
+            ? `<div class="step-done"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg>Согласовано ${esc(ap.at)} на этом устройстве <button class="btn sm ghost" id="osUnapprove">Отменить</button></div>
+               <div class="send-row">
+                 <button class="btn share wa" id="osWa"><svg viewBox="0 0 24 24"><path d="M4 20l1.3-4A8 8 0 1 1 8 19z"/></svg>WhatsApp</button>
+                 <button class="btn share tg" id="osTg"><svg viewBox="0 0 24 24"><path d="M21 4L3 11l6 2 2 6 3-4 5 4z"/></svg>Telegram</button>
+                 <button class="btn share" id="osMail"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>Почта</button>
+                 ${navigator.canShare ? `<button class="btn share" id="osShare"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 8l5-5 5 5M5 14v5h14v-5"/></svg>Поделиться файлом</button>` : ""}
+                 <button class="btn share" id="osXls"><svg viewBox="0 0 24 24"><path d="M12 4v11m0 0l-4-4m4 4l4-4M5 19h14"/></svg>Скачать Excel</button>
+               </div>
+               <p class="muted" style="font-size:12px;margin:8px 0 0">Сервис ничего не отправляет сам: откроется мессенджер с готовым текстом, получателя выбираете вы. Из браузера на компьютере файл приложить нельзя — Excel скачается, прикрепите его к сообщению. На телефоне «Поделиться файлом» отправит Excel сразу.</p>`
+            : `<p class="say" style="margin:0 0 10px">Проверьте количество — его можно изменить прямо в списке. Затем согласуйте заказ, и появятся кнопки отправки.</p>
+               <div class="send-row"><button class="btn success" id="osApprove" ${lines.length ? "" : "disabled"}>Согласовать заказ</button><button class="btn" id="osXls">Скачать Excel</button></div>`}
+        </div>
+        ${lines.length ? `<div class="table-wrap"><table class="acts">
+          <thead><tr><th>Товар</th><th>Статус</th><th>Заказать до</th><th class="r">Заказ, шт</th></tr></thead>
+          <tbody>${lines.slice(0, 300).map((x) => `<tr data-id="${esc(x.s.id)}">
+            <td><div class="p-name">${esc(x.s.n)}</div><div class="p-meta"><span>${esc(x.s.id)}</span>${x.s.art ? `<span>${esc(x.s.art)}</span>` : ""}</div></td>
+            <td>${statusPill(x.r.status)}</td>
+            <td class="num">${x.r.status === "now" ? "немедленно" : x.r.safeDay == null ? NA : x.r.safeDay <= 0 ? "сегодня" : Engine.fmtDay(x.r.safeDay)}</td>
+            <td class="r"><input class="qty-input ${state.overrides[x.s.id] != null ? "edited" : ""}" type="number" min="0" step="${x.s.moq}" value="${x.final}" data-oq="${esc(x.s.id)}" ${ap ? "disabled" : ""} aria-label="Количество"></td>
+          </tr>`).join("")}</tbody></table></div>
+          ${lines.length > 300 ? `<p class="muted" style="font-size:12.5px">Показаны первые 300 из ${fmt(lines.length)} — полный список в Excel.</p>` : ""}`
+        : `<div class="empty">В этом наборе позиций нет. Выберите «+ эта неделя» или «Весь заказ».</div>`}
+      </div>`;
+    $(".d-close", d).onclick = closeDrawer;
+    $$("[data-scope]", d).forEach((b) => (b.onclick = () => openOrderSheet(k, b.dataset.scope)));
+    $$("[data-oq]", d).forEach((inp) => (inp.onchange = () => {
+      const row = rows.find((x) => x.s.id === inp.dataset.oq);
+      const v = Math.max(0, Math.round(+inp.value || 0));
+      if (v === row.r.qty) delete state.overrides[row.s.id]; else state.overrides[row.s.id] = v;
+      store.set("overrides", state.overrides); recompute(); render(); openOrderSheet(k, scope);
+    }));
+    const xls = () => { XLSX.writeFile(buildWorkbook([k], () => lines, ap ? `Согласовано ${ap.at}, отправляет менеджер` : null), orderFile(k)); };
+    $("#osXls").onclick = () => { xls(); toast("Excel скачан"); };
+    if (!ap) {
+      $("#osApprove").onclick = () => {
+        state.approved[k] = { at: new Date().toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }), n: lines.length };
+        store.set("approved", state.approved); render(); openOrderSheet(k, scope); toast("Заказ согласован — выберите, куда отправить");
+      };
+      d.classList.add("open"); d.setAttribute("aria-hidden", "false"); $("#scrim").hidden = false;
+      return;
+    }
+    $("#osUnapprove").onclick = () => { delete state.approved[k]; store.set("approved", state.approved); render(); openOrderSheet(k, scope); };
+    const text = orderSummary(k, lines);
+    const go = (url) => window.open(url, "_blank", "noopener");
+    $("#osWa").onclick = () => { xls(); go(`https://wa.me/?text=${encodeURIComponent(text)}`); };
+    $("#osTg").onclick = () => { xls(); go(`https://t.me/share/url?url=${encodeURIComponent("https://umny-zakup.vercel.app")}&text=${encodeURIComponent(text)}`); };
+    $("#osMail").onclick = () => { xls(); location.href = `mailto:?subject=${encodeURIComponent(`Заказ поставщику ${SUPS[k].name}`)}&body=${encodeURIComponent(text.split("\n").slice(0, 8).join("\n") + "\n\nФайл Excel во вложении.")}`; };
+    if ($("#osShare")) $("#osShare").onclick = async () => {
+      const blob = new Blob([XLSX.write(buildWorkbook([k], () => lines, `Согласовано ${ap.at}`), { type: "array", bookType: "xlsx" })], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const file = new File([blob], orderFile(k), { type: blob.type });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        try { await navigator.share({ files: [file], title: `Заказ ${SUPS[k].name}`, text: text.split("\n").slice(0, 3).join("\n") }); } catch { /* пользователь отменил */ }
+      } else { xls(); toast("Это устройство не умеет делиться файлом — Excel скачан"); }
+    };
+    d.classList.add("open"); d.setAttribute("aria-hidden", "false"); $("#scrim").hidden = false;
+  }
+
+  function supplierOrderCards(base) {
+    return `<div class="order-cards">${Object.keys(REAL_SUPS).filter((k) => state.sup === "all" || k === state.sup).map((k) => {
+      const today = base.filter((x) => x.s.sup === k && Engine.isOrderToday(x));
+      const all = base.filter((x) => x.s.sup === k && x.final > 0);
+      const cov = Engine.priceCoverage(today);
+      const ap = state.approved[k];
+      return `<div class="order-card">
+        <div class="oc-top"><div><div class="oc-sup">${esc(REAL_SUPS[k].name)}</div><div class="muted" style="font-size:12.5px">заказ на сегодня · всего к заказу ${fmt(all.length)} поз.</div></div>
+          ${ap ? `<span class="approved-badge"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg>Согласован ${esc(ap.at)}</span>` : ""}</div>
+        <div class="oc-nums"><div><b class="num">${fmt(today.length)}</b><span>позиций</span></div><div><b class="num">${fmt(today.reduce((a, x) => a + x.final, 0))}</b><span>штук</span></div><div><b class="num">${cov.priced ? money(cov.value) : "—"}</b><span>${cov.priced ? (cov.missing ? "по известным ценам" : "сумма") : "цен нет"}</span></div></div>
+        <button class="btn primary oc-btn" data-order="${k}">${ap ? "Отправить заказ" : "Проверить и согласовать заказ"} →</button>
+      </div>`;
+    }).join("")}</div>`;
+  }
+
   function renderToday() {
     const base = baseRows();
     const orders = base.filter((x) => x.final > 0);
@@ -281,7 +409,7 @@
     const gl = Object.entries(groups).sort((a, b) => b[1].crit + b[1].other - (a[1].crit + a[1].other)).slice(0, 7);
     const gmax = Math.max(1, ...gl.map(([, g]) => g.crit + g.other));
     const legendCrit = `<div class="legend"><span><i style="width:10px;height:10px;background:var(--crit);border-radius:2px"></i>Критичные</span><span><i style="width:10px;height:10px;background:var(--series-1);border-radius:2px"></i>Остальные к заказу</span></div>`;
-    $("#tab-today").innerHTML = `<div class="dash">
+    $("#tab-today").innerHTML = `${supplierOrderCards(base)}<div class="dash">
       <div class="card"><h3>Статус позиций к заказу</h3><p class="c-desc">Когда нужно действовать · нажмите, чтобы открыть список</p>
         <div class="donut-wrap">${donut(parts, orders.length || 1)}
           <div class="dlegend">${parts.map((p) => `<button data-st="${p.k}"><i style="background:${p.c}"></i><span>${p.l}</span><b>${fmt(p.v)}</b></button>`).join("")}</div>
@@ -317,6 +445,7 @@
     $$("#tab-today .hit2").forEach((h) => { h.addEventListener("mousemove", (e) => { const t = $("#tip"); t.innerHTML = h.dataset.tip; t.hidden = false; t.style.left = e.clientX + 14 + "px"; t.style.top = e.clientY + 14 + "px"; }); h.addEventListener("mouseleave", () => ($("#tip").hidden = true)); });
     $$("#tab-today [data-st]").forEach((b) => (b.onclick = () => setFilter({ urg: "all", st: b.dataset.st, win: null, onlyOrder: true, sort: "action" })));
     $("#allActs")?.addEventListener("click", () => setFilter({ urg: "all", st: "all", win: null, onlyOrder: true, sort: "action" }));
+    $$("#tab-today [data-order]").forEach((b) => (b.onclick = () => openOrderSheet(b.dataset.order, "today")));
   }
   function bindRows(root) {
     $$("tr[data-id]", root).forEach((tr) => {
@@ -327,6 +456,7 @@
 
   function setFilter(f) {
     state.deficitOnly = false;
+    state.stSet = null;
     Object.assign(state, f);
     $("#onlyOrder").checked = state.onlyOrder;
     $("#statusSel").value = state.st;
@@ -346,6 +476,10 @@
       <button class="chip ${state.urg === k ? "active" : ""}" data-u="${k}">
         ${k !== "all" ? `<span class="dot" style="background:var(--${k === "critical" ? "crit" : k === "soon" ? "warn" : k === "planned" ? "plan" : "good"})"></span>` : ""}
         ${l} <b>${fmt(counts[k])}</b></button>`).join("");
+    if (state.stSet) {
+      $("#urgChips").insertAdjacentHTML("beforeend", `<button class="chip active" id="stSetChip">Статус: ${state.stSet.map((k) => ST[k].label.toLowerCase()).join(" и ")} ✕</button>`);
+      $("#stSetChip").addEventListener("click", () => { state.stSet = null; render(); });
+    }
     if (state.deficitOnly) {
       $("#urgChips").insertAdjacentHTML("beforeend", `<button class="chip active" id="defChip">Ожидаемый дефицит ✕</button>`);
       $("#defChip").addEventListener("click", () => { state.deficitOnly = false; render(); });
@@ -391,7 +525,7 @@
         <div class="sup-actions">
           ${ap ? `<span class="approved-badge"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg>Отмечен как согласованный · ${esc(ap.at)} · на этом устройстве</span>
                   <button class="btn sm" data-unapprove="${k}">Изменить</button>`
-               : `<button class="btn sm success" data-approve="${k}">Отметить согласованным</button>`}
+               : `<button class="btn sm success" data-approve="${k}">Проверить и отправить заказ</button>`}
         </div>
       </div>
       <div class="table-wrap"><table>
@@ -466,7 +600,7 @@
       });
     });
     $$("[data-more]").forEach((b) => b.addEventListener("click", () => { state.limit[b.dataset.more] = (state.limit[b.dataset.more] || 60) + 60; renderOrders(); }));
-    $$("[data-approve]").forEach((b) => b.addEventListener("click", () => approveModal(b.dataset.approve)));
+    $$("[data-approve]").forEach((b) => b.addEventListener("click", () => openOrderSheet(b.dataset.approve, "all")));
     $$("[data-unapprove]").forEach((b) => b.addEventListener("click", () => {
       delete state.approved[b.dataset.unapprove]; store.set("approved", state.approved); render();
     }));
@@ -507,15 +641,15 @@
     };
   }
 
-  function exportXlsx(keys = Object.keys(SUPS).filter((k) => state.sup === "all" || k === state.sup)) {
-    if (!window.XLSX) { toast("Библиотека Excel не загрузилась"); return; }
+  /** Книга Excel: лист на поставщика + «Параметры». pick(k) — строки заказа поставщика k. */
+  function buildWorkbook(keys, pick = (k) => rows.filter((x) => x.s.sup === k && x.final > 0), statusText = null) {
     const wb = XLSX.utils.book_new();
     const ctx = {
       supName: (k) => SUPS[k].name, urgLabel: (u) => URG[u].label,
-      approval: (k) => (state.approved[k] ? `Отмечен как согласованный на этом устройстве ${state.approved[k].at}, не отправлен поставщику` : "Черновик, не отправлен"),
+      approval: (k) => statusText || (state.approved[k] ? `Отмечен как согласованный на этом устройстве ${state.approved[k].at}, не отправлен поставщику` : "Черновик, не отправлен"),
     };
     keys.forEach((k) => {
-      const lines = rows.filter((x) => x.s.sup === k && x.final > 0).sort(Engine.actionCompare);
+      const lines = pick(k).slice().sort(Engine.actionCompare);
       const data = Engine.exportRows(lines, state.p, ctx);
       const ws = XLSX.utils.json_to_sheet(data);
       // коды 1С и артикулы — текст, чтобы Excel не срезал ведущие нули
@@ -528,7 +662,7 @@
       XLSX.utils.book_append_sheet(wb, ws, SUPS[k].name.slice(0, 31));
     });
     // лист «Параметры»: с какими данными и настройками получен заказ
-    const cov = Engine.priceCoverage(rows.filter((x) => keys.includes(x.s.sup)));
+    const cov = Engine.priceCoverage(keys.flatMap((k) => pick(k)));
     const sc = SCN[state.p.scenario];
     const info = [
       ["Сервис", "Умный Закуп — расчёт заказов поставщикам"],
@@ -545,12 +679,16 @@
       ["Строк с известной ценой", `${cov.priced} (${cov.share == null ? "—" : Math.round(cov.share * 100) + "%"})`],
       ["Стоимость по известным ценам, ₸", Math.round(cov.value)],
       ["Внимание", "Стоимость неполная: у части позиций нет цены (в файле — «Нет данных», а не 0)."],
-      ["Статус", "Файл подготовлен для проверки и последующего импорта. Поставщику ничего не отправлено."],
+      ["Статус", statusText || "Файл подготовлен для проверки и последующего импорта. Поставщику ничего не отправлено."],
     ];
     const wsInfo = XLSX.utils.aoa_to_sheet([["Параметр", "Значение"], ...info]);
     wsInfo["!cols"] = [{ wch: 34 }, { wch: 110 }];
     XLSX.utils.book_append_sheet(wb, wsInfo, "Параметры");
-    XLSX.writeFile(wb, `Заказ_поставщикам_${META.asOf}_${sc.label}.xlsx`);
+    return wb;
+  }
+  function exportXlsx(keys = Object.keys(REAL_SUPS).filter((k) => state.sup === "all" || k === state.sup)) {
+    if (!window.XLSX) { toast("Библиотека Excel не загрузилась"); return; }
+    XLSX.writeFile(buildWorkbook(keys), `Заказ_поставщикам_${META.asOf}_${SCN[state.p.scenario].label}.xlsx`);
   }
 
   // ---------------- drawer ----------------
@@ -584,6 +722,7 @@
         <button class="d-close" aria-label="Закрыть"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
       </div>
       <div class="d-body">
+        ${heroSay(s, r, row)}
         <div class="facts">
           ${fact("Закончится", fDay(r.stockoutDay), r.stockoutDay == null ? (r.status === "nodata" ? "мало истории" : "не раньше чем через 6 мес") : inDays(r.stockoutDay), r.status === "now" || r.expectedDeficit ? "crit" : "")}
           ${fact("Последний безопасный день", r.safeDay == null ? NA : r.status === "now" ? "Немедленно" : r.safeDay < 0 ? "Просрочено" : Engine.fmtDay(r.safeDay), r.safeDay == null ? (r.status === "nodata" ? "мало истории" : "заказ пока не нужен") : r.status === "now" ? "товара уже нет" : r.safeDay < 0 ? `на ${fmt(-r.safeDay)} дн` : inDays(r.safeDay), r.safeDay != null && r.safeDay < 0 ? "crit" : "")}
@@ -639,6 +778,24 @@
     $("#drawer").classList.remove("open");
     $("#drawer").setAttribute("aria-hidden", "true");
     $("#scrim").hidden = true;
+  }
+  /** Главный ответ по товару одной фразой: сколько и когда заказать и что будет с запасом. */
+  function heroSay(s, r, row) {
+    if (r.status === "nodata") return `<div class="hero-say none"><b class="big">Недостаточно данных для прогноза.</b><br>Истории продаж меньше ${META.minHistory} месяцев — решение принимает менеджер.</div>`;
+    const q = row.final;
+    const arr = Engine.fmtDay(r.arrivalDay);
+    const gap = r.stockoutDay != null ? r.arrivalDay - r.stockoutDay : 0;
+    if (!(q > 0)) {
+      return `<div class="hero-say"><b class="big">Заказ не нужен.</b><br>${r.stockoutDay == null ? "Запаса хватит больше чем на 6 месяцев." : `Запаса хватит до ${Engine.fmtDay(r.stockoutDay)}; вернитесь к товару до ${Engine.fmtDay(Math.max(r.safeDay ?? 0, 0))}.`}</div>`;
+    }
+    const when = r.status === "now" || (r.safeDay != null && r.safeDay <= 0) ? "сегодня" : `до ${Engine.fmtDay(r.safeDay)}`;
+    let tail;
+    if (r.status === "now") tail = `Товара нет уже сейчас. Заказ, размещённый сегодня, придёт ${arr}${r.deficitLead >= 1 ? ` — до этого не будет удовлетворено ≈ ${fmt(r.deficitLead)} шт спроса` : ""}.`;
+    else if (r.expectedDeficit) tail = `Товар закончится ${Engine.fmtDay(r.stockoutDay)}, заказ придёт ${arr}: ${fmt(gap)} ${gap === 1 ? "день" : "дн"} без товара, ≈ ${fmt(r.deficitLead)} шт спроса.`;
+    else if (r.stockoutDay != null) tail = `Товар закончится ${Engine.fmtDay(r.stockoutDay)}; если заказать ${when}, поставка придёт вовремя.`;
+    else tail = "Запаса хватит надолго, заказ поддерживает страховой уровень.";
+    const tone = r.status === "now" || r.expectedDeficit ? "crit" : r.safeDay != null && r.safeDay <= 7 ? "warn" : "";
+    return `<div class="hero-say ${tone}"><b class="big">Заказать ${fmt(q)} шт ${when}.</b><br>${tail}</div>`;
   }
   const calcRow = (op, title, sub, val) => `<div class="calc-row"><span class="op">${op}</span><div><div>${title}</div>${sub ? `<div class="c-sub">${esc(sub)}</div>` : ""}</div><div class="c-val">${fmt(val)}</div></div>`;
 
