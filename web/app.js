@@ -272,7 +272,20 @@
     all: ["Весь заказ", "все рекомендованные позиции", (x) => x.final > 0],
   };
   let sheet = { k: null, scope: "today" };
-  const orderLines = (k, scope) => rows.filter((x) => x.s.sup === k && SCOPES[scope][2](x)).sort(Engine.actionCompare);
+  // ручной выбор: off — снятые галочки, add — товары, добавленные вручную через поиск
+  state.pick = store.get("pick", {});
+  const pickOf = (k) => (state.pick[k] ||= { off: [], add: [] });
+  const savePick = () => store.set("pick", state.pick);
+  /** Кандидаты в заказ: рекомендованные в выбранном наборе + добавленные вручную. */
+  function orderCandidates(k, scope) {
+    const pk = pickOf(k);
+    const base = rows.filter((x) => x.s.sup === k && SCOPES[scope][2](x));
+    const ids = new Set(base.map((x) => x.s.id));
+    const added = pk.add.map((id) => rows.find((x) => x.s.id === id)).filter((x) => x && !ids.has(x.s.id));
+    return [...base.sort(Engine.actionCompare), ...added].map((x) => ({ ...x, on: !pk.off.includes(x.s.id), manual: !ids.has(x.s.id) }));
+  }
+  /** Позиции, которые реально уходят в заказ: отмечены и количество > 0. */
+  const orderLines = (k, scope) => orderCandidates(k, scope).filter((x) => x.on && x.final > 0);
   const orderFile = (k) => `Заказ_${SUPS[k].name.replace(/\s+/g, "_")}_${META.asOf}.xlsx`;
 
   function orderSummary(k, lines) {
@@ -291,72 +304,111 @@
   }
 
   function openOrderSheet(k, scope = sheet.scope) {
-    sheet = { k, scope };
+    sheet = { k, scope, q: "" };
     openId = null;
-    const lines = orderLines(k, scope);
+    const d = $("#drawer");
+    d.innerHTML = `
+      <div class="d-head"><div style="min-width:0;flex:1">
+          <div class="muted" style="font-size:12.5px;margin-bottom:4px" id="osStep"></div>
+          <h2>Заказ ${esc(SUPS[k].name)}</h2>
+          <div class="seg" style="margin-top:10px;max-width:100%;overflow-x:auto" role="tablist">${Object.entries(SCOPES).map(([key, [l]]) => `<button class="${key === scope ? "active" : ""}" data-scope="${key}">${l}</button>`).join("")}</div>
+        </div>
+        <button class="d-close" aria-label="Закрыть"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+      <div class="d-body">
+        <div id="osSum"></div>
+        <div class="os-search">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+          <input id="osQ" type="search" placeholder="Найти товар ${esc(SUPS[k].name)}: название, код 1С, артикул" autocomplete="off" aria-label="Поиск товара в заказе">
+        </div>
+        <div id="osFound"></div>
+        <div id="osList"></div>
+      </div>`;
+    $(".d-close", d).onclick = closeDrawer;
+    $$("[data-scope]", d).forEach((b) => (b.onclick = () => openOrderSheet(k, b.dataset.scope)));
+    let qt;
+    $("#osQ").oninput = (e) => { clearTimeout(qt); qt = setTimeout(() => { sheet.q = e.target.value.trim().toLowerCase(); refreshSheet(); }, 120); };
+    refreshSheet();
+    d.classList.add("open"); d.setAttribute("aria-hidden", "false"); $("#scrim").hidden = false;
+  }
+
+  function refreshSheet() {
+    const { k, scope, q } = sheet;
+    const cand = orderCandidates(k, scope);
+    const lines = cand.filter((x) => x.on && x.final > 0);
     const cov = Engine.priceCoverage(lines);
     const units = lines.reduce((a, x) => a + x.final, 0);
     const crit = lines.filter((x) => ST[x.r.status].rank <= 1).length;
     const ap = state.approved[k];
-    const d = $("#drawer");
-    d.innerHTML = `
-      <div class="d-head"><div>
-          <div class="muted" style="font-size:12.5px;margin-bottom:4px">Заказ поставщику · шаг ${ap ? "3 из 3: отправка" : "1–2 из 3: проверка и согласование"}</div>
-          <h2>${esc(SUPS[k].name)}</h2>
-          <div class="seg" style="margin-top:10px" role="tablist">${Object.entries(SCOPES).map(([key, [l]]) => `<button class="${key === scope ? "active" : ""}" data-scope="${key}">${l}</button>`).join("")}</div>
-        </div>
-        <button class="d-close" aria-label="Закрыть"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
-      <div class="d-body">
-        <div class="facts">
-          <div class="fact main"><div class="f-l">Позиций</div><div class="f-v">${fmt(lines.length)}</div><div class="f-s">${esc(SCOPES[scope][1])}</div></div>
-          <div class="fact"><div class="f-l">Штук</div><div class="f-v">${fmt(units)}</div></div>
-          <div class="fact ${crit ? "crit" : ""}"><div class="f-l">Товара нет или просрочено</div><div class="f-v">${fmt(crit)}</div></div>
-          <div class="fact"><div class="f-l">Сумма</div><div class="f-v">${cov.priced ? money(cov.value) : "Нет данных"}</div><div class="f-s">${cov.missing ? `цены у ${fmt(cov.priced)} из ${fmt(cov.lines)} позиций` : "по себестоимости"}</div></div>
-        </div>
-        <div class="order-steps">
-          ${ap
-            ? `<div class="step-done"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg>Согласовано ${esc(ap.at)} на этом устройстве <button class="btn sm ghost" id="osUnapprove">Отменить</button></div>
-               <div class="send-row">
-                 <button class="btn share wa" id="osWa"><svg viewBox="0 0 24 24"><path d="M4 20l1.3-4A8 8 0 1 1 8 19z"/></svg>WhatsApp</button>
-                 <button class="btn share tg" id="osTg"><svg viewBox="0 0 24 24"><path d="M21 4L3 11l6 2 2 6 3-4 5 4z"/></svg>Telegram</button>
-                 <button class="btn share" id="osMail"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>Почта</button>
-                 ${navigator.canShare ? `<button class="btn share" id="osShare"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 8l5-5 5 5M5 14v5h14v-5"/></svg>Поделиться файлом</button>` : ""}
-                 <button class="btn share" id="osXls"><svg viewBox="0 0 24 24"><path d="M12 4v11m0 0l-4-4m4 4l4-4M5 19h14"/></svg>Скачать Excel</button>
-               </div>
-               <p class="muted" style="font-size:12px;margin:8px 0 0">Сервис ничего не отправляет сам: откроется мессенджер с готовым текстом, получателя выбираете вы. Из браузера на компьютере файл приложить нельзя — Excel скачается, прикрепите его к сообщению. На телефоне «Поделиться файлом» отправит Excel сразу.</p>`
-            : `<p class="say" style="margin:0 0 10px">Проверьте количество — его можно изменить прямо в списке. Затем согласуйте заказ, и появятся кнопки отправки.</p>
-               <div class="send-row"><button class="btn success" id="osApprove" ${lines.length ? "" : "disabled"}>Согласовать заказ</button><button class="btn" id="osXls">Скачать Excel</button></div>`}
-        </div>
-        ${lines.length ? `<div class="table-wrap"><table class="acts">
-          <thead><tr><th>Товар</th><th>Статус</th><th>Заказать до</th><th class="r">Заказ, шт</th></tr></thead>
-          <tbody>${lines.slice(0, 300).map((x) => `<tr data-id="${esc(x.s.id)}">
-            <td><div class="p-name">${esc(x.s.n)}</div><div class="p-meta"><span>${esc(x.s.id)}</span>${x.s.art ? `<span>${esc(x.s.art)}</span>` : ""}</div></td>
-            <td>${statusPill(x.r.status)}</td>
-            <td class="num">${x.r.status === "now" ? "немедленно" : x.r.safeDay == null ? NA : x.r.safeDay <= 0 ? "сегодня" : Engine.fmtDay(x.r.safeDay)}</td>
-            <td class="r"><input class="qty-input ${state.overrides[x.s.id] != null ? "edited" : ""}" type="number" min="0" step="${x.s.moq}" value="${x.final}" data-oq="${esc(x.s.id)}" ${ap ? "disabled" : ""} aria-label="Количество"></td>
-          </tr>`).join("")}</tbody></table></div>
-          ${lines.length > 300 ? `<p class="muted" style="font-size:12.5px">Показаны первые 300 из ${fmt(lines.length)} — полный список в Excel.</p>` : ""}`
-        : `<div class="empty">В этом наборе позиций нет. Выберите «+ эта неделя» или «Весь заказ».</div>`}
+    const off = cand.filter((x) => !x.on).length;
+    const manual = cand.filter((x) => x.manual).length;
+    $("#osStep").textContent = `Заказ поставщику · ${ap ? "шаг 3 из 3: отправка" : "шаг 1–2 из 3: выбор и согласование"}`;
+    $("#osSum").innerHTML = `
+      <div class="os-facts">
+        <div><b class="num">${fmt(lines.length)}</b><span>позиций в заказе${off ? ` · ${fmt(off)} снято` : ""}${manual ? ` · ${fmt(manual)} добавлено` : ""}</span></div>
+        <div><b class="num">${fmt(units)}</b><span>штук</span></div>
+        <div class="${crit ? "crit" : ""}"><b class="num">${fmt(crit)}</b><span>нет товара или просрочено</span></div>
+        <div><b class="num">${cov.priced ? money(cov.value) : "—"}</b><span>${cov.priced ? (cov.missing ? `по ценам ${fmt(cov.priced)} из ${fmt(cov.lines)} поз.` : "по себестоимости") : "цен нет"}</span></div>
+      </div>
+      <div class="order-steps">
+        ${ap
+          ? `<div class="step-done"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg>Согласовано ${esc(ap.at)} на этом устройстве <button class="btn sm ghost" id="osUnapprove">Изменить заказ</button></div>
+             <div class="send-row">
+               <button class="btn share wa" id="osWa"><svg viewBox="0 0 24 24"><path d="M4 20l1.3-4A8 8 0 1 1 8 19z"/></svg>WhatsApp</button>
+               <button class="btn share tg" id="osTg"><svg viewBox="0 0 24 24"><path d="M21 4L3 11l6 2 2 6 3-4 5 4z"/></svg>Telegram</button>
+               <button class="btn share" id="osMail"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>Почта</button>
+               ${navigator.canShare ? `<button class="btn share" id="osShare"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 8l5-5 5 5M5 14v5h14v-5"/></svg>Поделиться файлом</button>` : ""}
+               <button class="btn share" id="osXls"><svg viewBox="0 0 24 24"><path d="M12 4v11m0 0l-4-4m4 4l4-4M5 19h14"/></svg>Excel</button>
+             </div>
+             <p class="muted" style="font-size:12px;margin:8px 0 0">Сервис ничего не отправляет сам: откроется мессенджер с готовым текстом, получателя выбираете вы. На компьютере Excel скачается — приложите его к сообщению; на телефоне «Поделиться файлом» отправит Excel сразу.</p>`
+          : `<div class="send-row" style="align-items:center"><button class="btn success" id="osApprove" ${lines.length ? "" : "disabled"}>Согласовать заказ · ${fmt(lines.length)} поз.</button><button class="btn" id="osXls">Excel</button>
+             <span class="muted" style="font-size:12.5px">Снимите галочки с лишнего, поправьте количество или добавьте товар через поиск.</span></div>`}
       </div>`;
-    $(".d-close", d).onclick = closeDrawer;
-    $$("[data-scope]", d).forEach((b) => (b.onclick = () => openOrderSheet(k, b.dataset.scope)));
-    $$("[data-oq]", d).forEach((inp) => (inp.onchange = () => {
+    // найденные товары поставщика, которых нет в списке — можно добавить
+    const inList = new Set(cand.map((x) => x.s.id));
+    const match = (x) => `${x.s.n} ${x.s.id} ${x.s.art || ""}`.toLowerCase().includes(q);
+    const found = q.length >= 2 && !ap ? rows.filter((x) => x.s.sup === k && !inList.has(x.s.id) && match(x)).slice(0, 8) : [];
+    $("#osFound").innerHTML = found.length ? `<div class="os-found"><div class="muted" style="font-size:12.5px;margin-bottom:6px">Нет в заказе — можно добавить:</div>
+      ${found.map((x) => `<div class="os-f"><span><b>${esc(x.s.n)}</b><br><span class="muted">${esc(x.s.id)}${x.s.art ? " · " + esc(x.s.art) : ""} · остаток ${fmt(x.r.stock)} · ${x.r.qty > 0 ? `рекомендовано ${fmt(x.r.qty)} шт` : "сервис не рекомендует заказ"}</span></span><button class="btn sm" data-add="${esc(x.s.id)}">+ Добавить</button></div>`).join("")}</div>` : "";
+    const shown = q ? cand.filter(match) : cand;
+    $("#osList").innerHTML = shown.length ? `<div class="table-wrap"><table class="acts os-table">
+        <thead><tr><th style="width:34px"><input type="checkbox" id="osAll" ${shown.every((x) => x.on) ? "checked" : ""} ${ap ? "disabled" : ""} aria-label="Выбрать все показанные"></th><th>Товар</th><th>Статус</th><th class="r">Заказ, шт</th></tr></thead>
+        <tbody>${shown.slice(0, 400).map((x) => `<tr class="${x.on ? "" : "off"}">
+          <td><input type="checkbox" data-on="${esc(x.s.id)}" ${x.on ? "checked" : ""} ${ap ? "disabled" : ""} aria-label="Включить в заказ"></td>
+          <td><div class="p-name">${esc(x.s.n)}${x.manual ? ' <span class="badge in">добавлен вручную</span>' : ""}</div><div class="p-meta"><span>${esc(x.s.id)}</span>${x.s.art ? `<span>${esc(x.s.art)}</span>` : ""}<span>${x.r.status === "now" ? "заказать немедленно" : x.r.safeDay == null ? "" : x.r.safeDay <= 0 ? "заказать сегодня" : "до " + Engine.fmtDay(x.r.safeDay)}</span></div></td>
+          <td>${statusPill(x.r.status)}</td>
+          <td class="r"><input class="qty-input ${state.overrides[x.s.id] != null ? "edited" : ""}" type="number" min="0" step="${x.s.moq}" value="${x.final}" data-oq="${esc(x.s.id)}" ${ap || !x.on ? "disabled" : ""} aria-label="Количество">${x.on && !(x.final > 0) ? '<div class="rec-hint" style="color:var(--warn)">укажите количество</div>' : ""}</td>
+        </tr>`).join("")}</tbody></table></div>
+        ${shown.length > 400 ? `<p class="muted" style="font-size:12.5px">Показаны первые 400 из ${fmt(shown.length)} — уточните поиск. В заказ и Excel попадают все отмеченные.</p>` : ""}`
+      : `<div class="empty">${q ? "В заказе таких товаров нет — выше можно добавить найденные." : "В этом наборе позиций нет. Выберите «+ эта неделя» или «Весь заказ»."}</div>`;
+
+    const pk = pickOf(k);
+    const setOn = (id, on) => { pk.off = pk.off.filter((x) => x !== id); if (!on) pk.off.push(id); };
+    $$("[data-on]").forEach((c) => (c.onchange = () => { setOn(c.dataset.on, c.checked); savePick(); refreshSheet(); }));
+    if ($("#osAll")) $("#osAll").onchange = (e) => { shown.forEach((x) => setOn(x.s.id, e.target.checked)); savePick(); refreshSheet(); };
+    $$("[data-add]").forEach((b) => (b.onclick = () => {
+      const id = b.dataset.add;
+      if (!pk.add.includes(id)) pk.add.push(id);
+      setOn(id, true); savePick();
+      const x = rows.find((r) => r.s.id === id);
+      if (!(x.final > 0)) toast("Товар добавлен — укажите количество");
+      refreshSheet();
+    }));
+    $$("[data-oq]").forEach((inp) => (inp.onchange = () => {
       const row = rows.find((x) => x.s.id === inp.dataset.oq);
       const v = Math.max(0, Math.round(+inp.value || 0));
       if (v === row.r.qty) delete state.overrides[row.s.id]; else state.overrides[row.s.id] = v;
-      store.set("overrides", state.overrides); recompute(); render(); openOrderSheet(k, scope);
+      store.set("overrides", state.overrides); recompute(); render(); refreshSheet();
     }));
     const xls = () => { XLSX.writeFile(buildWorkbook([k], () => lines, ap ? `Согласовано ${ap.at}, отправляет менеджер` : null), orderFile(k)); };
     $("#osXls").onclick = () => { xls(); toast("Excel скачан"); };
     if (!ap) {
       $("#osApprove").onclick = () => {
         state.approved[k] = { at: new Date().toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }), n: lines.length };
-        store.set("approved", state.approved); render(); openOrderSheet(k, scope); toast("Заказ согласован — выберите, куда отправить");
+        store.set("approved", state.approved); render(); refreshSheet(); toast("Заказ согласован — выберите, куда отправить");
       };
-      d.classList.add("open"); d.setAttribute("aria-hidden", "false"); $("#scrim").hidden = false;
       return;
     }
-    $("#osUnapprove").onclick = () => { delete state.approved[k]; store.set("approved", state.approved); render(); openOrderSheet(k, scope); };
+    $("#osUnapprove").onclick = () => { delete state.approved[k]; store.set("approved", state.approved); render(); refreshSheet(); };
     const text = orderSummary(k, lines);
     const go = (url) => window.open(url, "_blank", "noopener");
     $("#osWa").onclick = () => { xls(); go(`https://wa.me/?text=${encodeURIComponent(text)}`); };
@@ -366,23 +418,24 @@
       const blob = new Blob([XLSX.write(buildWorkbook([k], () => lines, `Согласовано ${ap.at}`), { type: "array", bookType: "xlsx" })], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
       const file = new File([blob], orderFile(k), { type: blob.type });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        try { await navigator.share({ files: [file], title: `Заказ ${SUPS[k].name}`, text: text.split("\n").slice(0, 3).join("\n") }); } catch { /* пользователь отменил */ }
+        try { await navigator.share({ files: [file], title: `Заказ ${SUPS[k].name}`, text: text.split("\n").slice(0, 3).join("\n") }); } catch { /* отменено */ }
       } else { xls(); toast("Это устройство не умеет делиться файлом — Excel скачан"); }
     };
-    d.classList.add("open"); d.setAttribute("aria-hidden", "false"); $("#scrim").hidden = false;
   }
 
   function supplierOrderCards(base) {
     return `<div class="order-cards">${Object.keys(REAL_SUPS).filter((k) => state.sup === "all" || k === state.sup).map((k) => {
-      const today = base.filter((x) => x.s.sup === k && Engine.isOrderToday(x));
+      const lines = orderLines(k, "today");
       const all = base.filter((x) => x.s.sup === k && x.final > 0);
-      const cov = Engine.priceCoverage(today);
+      const cov = Engine.priceCoverage(lines);
       const ap = state.approved[k];
+      const pk = pickOf(k);
+      const edited = pk.off.length || pk.add.length;
       return `<div class="order-card">
-        <div class="oc-top"><div><div class="oc-sup">${esc(REAL_SUPS[k].name)}</div><div class="muted" style="font-size:12.5px">заказ на сегодня · всего к заказу ${fmt(all.length)} поз.</div></div>
-          ${ap ? `<span class="approved-badge"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg>Согласован ${esc(ap.at)}</span>` : ""}</div>
-        <div class="oc-nums"><div><b class="num">${fmt(today.length)}</b><span>позиций</span></div><div><b class="num">${fmt(today.reduce((a, x) => a + x.final, 0))}</b><span>штук</span></div><div><b class="num">${cov.priced ? money(cov.value) : "—"}</b><span>${cov.priced ? (cov.missing ? "по известным ценам" : "сумма") : "цен нет"}</span></div></div>
-        <button class="btn primary oc-btn" data-order="${k}">${ap ? "Отправить заказ" : "Проверить и согласовать заказ"} →</button>
+        <div class="oc-name"><div class="oc-sup">${esc(REAL_SUPS[k].name)}</div><div class="muted">на сегодня${edited ? " · изменён" : ""} · всего ${fmt(all.length)}</div></div>
+        <div class="oc-nums"><div><b class="num">${fmt(lines.length)}</b><span>поз.</span></div><div><b class="num">${fmt(lines.reduce((a, x) => a + x.final, 0))}</b><span>шт</span></div><div><b class="num">${cov.priced ? money(cov.value) : "—"}</b><span>${cov.priced ? (cov.missing ? "изв. цены" : "сумма") : "цен нет"}</span></div></div>
+        ${ap ? `<span class="approved-badge"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg>${esc(ap.at)}</span>` : ""}
+        <button class="btn primary oc-btn" data-order="${k}">${ap ? "Отправить" : "Открыть заказ"} →</button>
       </div>`;
     }).join("")}</div>`;
   }
