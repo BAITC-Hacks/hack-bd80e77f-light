@@ -534,3 +534,27 @@ h2.sec:first-child { margin-top: 4px; }
 @media (max-width: 600px) { .order-card { grid-template-columns: 1fr; } }
 .oc-nums b { white-space: nowrap; }
 .oc-nums { gap: 10px; }
+/* ---------- отправка заказа ---------- */
+.oc-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.btn.share svg { stroke: currentColor; }
+.oc-ic { padding: 8px 10px; }
+.oc-ic span { font-size: 13px; }
+.send-top { gap: 6px; border-color: #1faa53; color: #138a40; font-weight: 600; }
+.send-top svg:first-child { stroke: #1faa53; }
+.send-top svg:nth-child(2) { stroke: #2a9ed8; }
+.os-howto { font-size: 13px; color: var(--text-2); margin-bottom: 10px; }
+.btn.pulse { animation: pulse 1.2s ease-in-out 3; box-shadow: 0 0 0 0 rgba(31,170,83,.6); }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(42,120,214,.55); } 70% { box-shadow: 0 0 0 10px rgba(42,120,214,0); } 100% { box-shadow: 0 0 0 0 rgba(42,120,214,0); } }
+.order-card { grid-template-columns: minmax(120px, 1fr) auto auto; }
+@media (max-width: 1400px) { .oc-actions { grid-column: 1 / -1; } .oc-actions .oc-btn { flex: 1; } }
+@media (max-width: 600px) { .oc-ic span { display: none; } .send-top .lbl { display: none; } }
+/* карточка поставщика: строка 1 — название и цифры, строка 2 — кнопки в линию */
+.order-card { grid-template-columns: minmax(0, 1fr) auto !important; row-gap: 10px; }
+.oc-actions { grid-column: 1 / -1; flex-wrap: nowrap; }
+.oc-actions .oc-btn { flex: 1; justify-content: center; }
+.oc-actions .oc-ic { flex: none; }
+@media (max-width: 600px) { .order-card { grid-template-columns: 1fr !important; } .oc-actions .oc-btn { flex: 1; } }
+.search { min-width: 200px; }
+@media (max-width: 1450px) { .asof { display: none; } }
+@media (max-width: 1200px) { .send-top .lbl { display: none; } }
+@media (max-width: 900px) { .search { min-width: 0; } }

@@ -351,17 +351,17 @@
       </div>
       <div class="order-steps">
         ${ap
-          ? `<div class="step-done"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg>Согласовано ${esc(ap.at)} на этом устройстве <button class="btn sm ghost" id="osUnapprove">Изменить заказ</button></div>
-             <div class="send-row">
-               <button class="btn share wa" id="osWa"><svg viewBox="0 0 24 24"><path d="M4 20l1.3-4A8 8 0 1 1 8 19z"/></svg>WhatsApp</button>
-               <button class="btn share tg" id="osTg"><svg viewBox="0 0 24 24"><path d="M21 4L3 11l6 2 2 6 3-4 5 4z"/></svg>Telegram</button>
-               <button class="btn share" id="osMail"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>Почта</button>
-               ${navigator.canShare ? `<button class="btn share" id="osShare"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 8l5-5 5 5M5 14v5h14v-5"/></svg>Поделиться файлом</button>` : ""}
-               <button class="btn share" id="osXls"><svg viewBox="0 0 24 24"><path d="M12 4v11m0 0l-4-4m4 4l4-4M5 19h14"/></svg>Excel</button>
-             </div>
-             <p class="muted" style="font-size:12px;margin:8px 0 0">Сервис ничего не отправляет сам: откроется мессенджер с готовым текстом, получателя выбираете вы. На компьютере Excel скачается — приложите его к сообщению; на телефоне «Поделиться файлом» отправит Excel сразу.</p>`
-          : `<div class="send-row" style="align-items:center"><button class="btn success" id="osApprove" ${lines.length ? "" : "disabled"}>Согласовать заказ · ${fmt(lines.length)} поз.</button><button class="btn" id="osXls">Excel</button>
-             <span class="muted" style="font-size:12.5px">Снимите галочки с лишнего, поправьте количество или добавьте товар через поиск.</span></div>`}
+          ? `<div class="step-done"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg>Согласовано ${esc(ap.at)} на этом устройстве <button class="btn sm ghost" id="osUnapprove">Изменить заказ</button></div>`
+          : `<div class="os-howto"><b>1.</b> Снимите галочки с лишнего или добавьте товар через поиск ниже · <b>2.</b> Нажмите кнопку отправки — заказ будет согласован и откроется мессенджер</div>`}
+        <div class="send-row">
+          <button class="btn share wa" data-send="wa" ${lines.length ? "" : "disabled"}><svg viewBox="0 0 24 24"><path d="M4 20l1.3-4A8 8 0 1 1 8 19z"/></svg>${ap ? "WhatsApp" : "Согласовать и отправить в WhatsApp"}</button>
+          <button class="btn share tg" data-send="tg" ${lines.length ? "" : "disabled"}><svg viewBox="0 0 24 24"><path d="M21 4L3 11l6 2 2 6 3-4 5 4z"/></svg>${ap ? "Telegram" : "Согласовать и отправить в Telegram"}</button>
+          <button class="btn share" data-send="mail" ${lines.length ? "" : "disabled"}><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>Почта</button>
+          ${navigator.canShare ? `<button class="btn share" data-send="file" ${lines.length ? "" : "disabled"}><svg viewBox="0 0 24 24"><path d="M12 3v12M7 8l5-5 5 5M5 14v5h14v-5"/></svg>Поделиться файлом</button>` : ""}
+          <button class="btn share" id="osXls"><svg viewBox="0 0 24 24"><path d="M12 4v11m0 0l-4-4m4 4l4-4M5 19h14"/></svg>Excel</button>
+          ${ap ? "" : `<button class="btn sm ghost" id="osApprove" ${lines.length ? "" : "disabled"}>Только согласовать</button>`}
+        </div>
+        <p class="muted" style="font-size:12px;margin:8px 0 0">Сервис ничего не отправляет сам: откроется WhatsApp или Telegram с готовым текстом заказа (итоги и первые 15 позиций), получателя выбираете вы. На компьютере Excel скачается — приложите его к сообщению; на телефоне «Поделиться файлом» отправит Excel сразу.</p>
       </div>`;
     // найденные товары поставщика, которых нет в списке — можно добавить
     const inList = new Set(cand.map((x) => x.s.id));
@@ -399,28 +399,59 @@
       if (v === row.r.qty) delete state.overrides[row.s.id]; else state.overrides[row.s.id] = v;
       store.set("overrides", state.overrides); recompute(); render(); refreshSheet();
     }));
-    const xls = () => { XLSX.writeFile(buildWorkbook([k], () => lines, ap ? `Согласовано ${ap.at}, отправляет менеджер` : null), orderFile(k)); };
-    $("#osXls").onclick = () => { xls(); toast("Excel скачан"); };
-    if (!ap) {
-      $("#osApprove").onclick = () => {
-        state.approved[k] = { at: new Date().toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }), n: lines.length };
-        store.set("approved", state.approved); render(); refreshSheet(); toast("Заказ согласован — выберите, куда отправить");
-      };
-      return;
-    }
-    $("#osUnapprove").onclick = () => { delete state.approved[k]; store.set("approved", state.approved); render(); refreshSheet(); };
-    const text = orderSummary(k, lines);
-    const go = (url) => window.open(url, "_blank", "noopener");
-    $("#osWa").onclick = () => { xls(); go(`https://wa.me/?text=${encodeURIComponent(text)}`); };
-    $("#osTg").onclick = () => { xls(); go(`https://t.me/share/url?url=${encodeURIComponent("https://umny-zakup.vercel.app")}&text=${encodeURIComponent(text)}`); };
-    $("#osMail").onclick = () => { xls(); location.href = `mailto:?subject=${encodeURIComponent(`Заказ поставщику ${SUPS[k].name}`)}&body=${encodeURIComponent(text.split("\n").slice(0, 8).join("\n") + "\n\nФайл Excel во вложении.")}`; };
-    if ($("#osShare")) $("#osShare").onclick = async () => {
-      const blob = new Blob([XLSX.write(buildWorkbook([k], () => lines, `Согласовано ${ap.at}`), { type: "array", bookType: "xlsx" })], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-      const file = new File([blob], orderFile(k), { type: blob.type });
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        try { await navigator.share({ files: [file], title: `Заказ ${SUPS[k].name}`, text: text.split("\n").slice(0, 3).join("\n") }); } catch { /* отменено */ }
-      } else { xls(); toast("Это устройство не умеет делиться файлом — Excel скачан"); }
+    const approve = () => {
+      if (state.approved[k]) return state.approved[k];
+      state.approved[k] = { at: new Date().toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }), n: lines.length };
+      store.set("approved", state.approved);
+      return state.approved[k];
     };
+    const xls = (a = state.approved[k]) => { XLSX.writeFile(buildWorkbook([k], () => lines, a ? `Согласовано ${a.at}, отправляет менеджер` : null), orderFile(k)); };
+    $("#osXls").onclick = () => { xls(); toast("Excel скачан"); };
+    if ($("#osApprove")) $("#osApprove").onclick = () => { approve(); render(); refreshSheet(); toast("Заказ согласован"); };
+    if ($("#osUnapprove")) $("#osUnapprove").onclick = () => { delete state.approved[k]; store.set("approved", state.approved); render(); refreshSheet(); };
+    const go = (url) => window.open(url, "_blank", "noopener");
+    $$("[data-send]").forEach((b) => (b.onclick = async () => {
+      const a = approve();                         // нажатие кнопки = подтверждение менеджера
+      const text = orderSummary(k, lines);
+      const kind = b.dataset.send;
+      if (kind === "file") {
+        const blob = new Blob([XLSX.write(buildWorkbook([k], () => lines, `Согласовано ${a.at}`), { type: "array", bookType: "xlsx" })], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+        const file = new File([blob], orderFile(k), { type: blob.type });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          try { await navigator.share({ files: [file], title: `Заказ ${SUPS[k].name}`, text: text.split("\n").slice(0, 3).join("\n") }); } catch { /* отменено */ }
+        } else { xls(a); toast("Это устройство не умеет делиться файлом — Excel скачан"); }
+      } else {
+        xls(a);
+        if (kind === "wa") go(`https://wa.me/?text=${encodeURIComponent(text)}`);
+        if (kind === "tg") go(`https://t.me/share/url?url=${encodeURIComponent("https://umny-zakup.vercel.app")}&text=${encodeURIComponent(text)}`);
+        if (kind === "mail") location.href = `mailto:?subject=${encodeURIComponent(`Заказ поставщику ${SUPS[k].name}`)}&body=${encodeURIComponent(text.split("\n").slice(0, 8).join("\n") + "\n\nФайл Excel во вложении.")}`;
+        toast("Заказ согласован, Excel скачан — выберите получателя в мессенджере");
+      }
+      render(); refreshSheet();
+    }));
+  }
+
+  /** Подсветить кнопку отправки в окне заказа: менеджер проверяет выбор и нажимает её сам. */
+  function highlightSend(kind) {
+    const b = $(`#drawer [data-send="${kind}"]`);
+    if (!b) return;
+    b.classList.add("pulse");
+    b.scrollIntoView({ block: "center" });
+    toast("Проверьте выбор товаров и нажмите кнопку отправки");
+  }
+  /** Кнопка «Отправить заказ» в шапке: выбрать поставщика. */
+  function sendChooser() {
+    const keys = Object.keys(REAL_SUPS).filter((k) => state.sup === "all" || k === state.sup);
+    if (keys.length === 1) { switchTab("today"); openOrderSheet(keys[0], "today"); return; }
+    const m = $("#modal");
+    m.innerHTML = `<div class="modal-box" role="dialog" aria-modal="true"><h3>Отправить заказ поставщику</h3>
+      <p>Выберите поставщика. Откроется заказ: отметьте нужные товары галочками, найдите и добавьте другие через поиск — и отправьте в WhatsApp, Telegram или на почту.</p>
+      <div class="list">${keys.map((k) => { const l = orderLines(k, "today"); return `<button class="list-row" data-ch="${k}" style="width:100%;border:0;background:none;cursor:pointer;text-align:left;font:inherit"><span><b>${esc(REAL_SUPS[k].name)}</b><br><span class="muted">на сегодня ${fmt(l.length)} поз. · ${fmt(l.reduce((a, x) => a + x.final, 0))} шт</span></span><span style="color:var(--accent-ink);font-weight:600">Открыть →</span></button>`; }).join("")}</div>
+      <div class="modal-actions"><button class="btn" data-close>Отмена</button></div></div>`;
+    m.hidden = false;
+    $("[data-close]", m).onclick = () => (m.hidden = true);
+    m.onclick = (e) => { if (e.target === m) m.hidden = true; };
+    $$("[data-ch]", m).forEach((b) => (b.onclick = () => { m.hidden = true; switchTab("today"); openOrderSheet(b.dataset.ch, "today"); }));
   }
 
   function supplierOrderCards(base) {
@@ -435,7 +466,11 @@
         <div class="oc-name"><div class="oc-sup">${esc(REAL_SUPS[k].name)}</div><div class="muted">на сегодня${edited ? " · изменён" : ""} · всего ${fmt(all.length)}</div></div>
         <div class="oc-nums"><div><b class="num">${fmt(lines.length)}</b><span>поз.</span></div><div><b class="num">${fmt(lines.reduce((a, x) => a + x.final, 0))}</b><span>шт</span></div><div><b class="num">${cov.priced ? money(cov.value) : "—"}</b><span>${cov.priced ? (cov.missing ? "изв. цены" : "сумма") : "цен нет"}</span></div></div>
         ${ap ? `<span class="approved-badge"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg>${esc(ap.at)}</span>` : ""}
-        <button class="btn primary oc-btn" data-order="${k}">${ap ? "Отправить" : "Открыть заказ"} →</button>
+        <div class="oc-actions">
+          <button class="btn primary oc-btn" data-order="${k}" title="Отметить нужные товары галочками, найти и добавить любой товар">☑ Выбрать товары</button>
+          <button class="btn share wa oc-ic" data-order="${k}" data-intent="wa" title="Отправить заказ в WhatsApp" aria-label="Отправить заказ ${esc(REAL_SUPS[k].name)} в WhatsApp"><svg viewBox="0 0 24 24"><path d="M4 20l1.3-4A8 8 0 1 1 8 19z"/></svg><span>WhatsApp</span></button>
+          <button class="btn share tg oc-ic" data-order="${k}" data-intent="tg" title="Отправить заказ в Telegram" aria-label="Отправить заказ ${esc(REAL_SUPS[k].name)} в Telegram"><svg viewBox="0 0 24 24"><path d="M21 4L3 11l6 2 2 6 3-4 5 4z"/></svg><span>Telegram</span></button>
+        </div>
       </div>`;
     }).join("")}</div>`;
   }
@@ -498,7 +533,7 @@
     $$("#tab-today .hit2").forEach((h) => { h.addEventListener("mousemove", (e) => { const t = $("#tip"); t.innerHTML = h.dataset.tip; t.hidden = false; t.style.left = e.clientX + 14 + "px"; t.style.top = e.clientY + 14 + "px"; }); h.addEventListener("mouseleave", () => ($("#tip").hidden = true)); });
     $$("#tab-today [data-st]").forEach((b) => (b.onclick = () => setFilter({ urg: "all", st: b.dataset.st, win: null, onlyOrder: true, sort: "action" })));
     $("#allActs")?.addEventListener("click", () => setFilter({ urg: "all", st: "all", win: null, onlyOrder: true, sort: "action" }));
-    $$("#tab-today [data-order]").forEach((b) => (b.onclick = () => openOrderSheet(b.dataset.order, "today")));
+    $$("#tab-today [data-order]").forEach((b) => (b.onclick = () => { openOrderSheet(b.dataset.order, "today"); if (b.dataset.intent) highlightSend(b.dataset.intent); }));
   }
   function bindRows(root) {
     $$("tr[data-id]", root).forEach((tr) => {
@@ -1710,6 +1745,7 @@
     $("#onlyOrder").addEventListener("change", (e) => { state.onlyOrder = e.target.checked; if (state.onlyOrder && state.urg === "ok") state.urg = "all"; render(); });
     $$(".tab").forEach((b) => b.addEventListener("click", () => switchTab(b.dataset.tab)));
     $("#exportBtn").addEventListener("click", () => { exportXlsx(); toast("Excel сформирован. Поставщику ничего не отправлено"); });
+    $("#sendBtn").addEventListener("click", sendChooser);
     $("#paramsToggle").addEventListener("click", openParams);
     $("#paramsClose").addEventListener("click", closeParams);
     $("#paramsScrim").addEventListener("click", closeParams);
@@ -1723,6 +1759,7 @@
     if (h.get("sup") && SUPS[h.get("sup")]) { state.sup = h.get("sup"); renderSupSeg(); renderGroupSel(); recompute(); render(); }
     if (h.get("tab")) switchTab(h.get("tab"));
     if (h.get("sku")) openDrawer(h.get("sku"));
+    if (h.get("order") && REAL_SUPS[h.get("order")]) openOrderSheet(h.get("order"), "today");
     if (h.get("sec")) document.getElementById(h.get("sec"))?.scrollIntoView();
   }
   try {
