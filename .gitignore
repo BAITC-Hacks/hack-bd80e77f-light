@@ -3,3 +3,5 @@
 __pycache__/
 *.pyc
 ~$*.xlsx
+.cache/
+.pytest_cache/
