@@ -32,12 +32,12 @@
   </g>
 
   <text x="190" y="100" fill="#9eeaff" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" letter-spacing="3">РАБОТАЮЩИЙ MVP</text>
-  <text x="190" y="150" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="38" font-weight="800">Прогнозируйте дефицит до того, как он остановит продажи</text>
-  <text x="190" y="194" fill="#d9f5ff" font-family="Arial, Helvetica, sans-serif" font-size="23">Без установки · открывается в браузере · работает на компьютере и телефоне</text>
+  <text x="190" y="146" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="800">Прогнозируйте дефицит до того,</text>
+  <text x="190" y="184" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="800">как он остановит продажи</text>
+  <text x="190" y="222" fill="#d9f5ff" font-family="Arial, Helvetica, sans-serif" font-size="20">Без установки · открывается в браузере · работает на компьютере и телефоне</text>
 
-  <g transform="translate(1096 75)" filter="url(#shadow)">
-    <rect width="284" height="110" rx="25" fill="url(#button)"/>
-    <text x="142" y="47" text-anchor="middle" fill="#092650" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="800" letter-spacing="1">ОТКРЫТЬ СЕРВИС</text>
-    <text x="142" y="79" text-anchor="middle" fill="#092650" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="900">ЗАПУСТИТЬ →</text>
+  <g transform="translate(1096 82)" filter="url(#shadow)">
+    <rect width="284" height="96" rx="25" fill="url(#button)"/>
+    <text x="142" y="59" text-anchor="middle" fill="#092650" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="900" letter-spacing=".6">ЗАПУСТИТЬ СЕРВИС →</text>
   </g>
 </svg>

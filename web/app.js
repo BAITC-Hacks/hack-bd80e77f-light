@@ -461,7 +461,30 @@
       ws["!cols"] = [16, 13, 18, 50, 5, 9, 10, 10, 10, 12, 12, 16, 12, 11, 11, 9, 12, 13, 11, 90, 28].map((w) => ({ wch: w }));
       XLSX.utils.book_append_sheet(wb, ws, SUPS[k].name.slice(0, 31));
     });
-    XLSX.writeFile(wb, `Заказ_поставщикам_${META.asOf}_${SCN[state.p.scenario].label}.xlsx`);
+    // лист «Параметры»: с какими данными и настройками получен заказ
+    const cov = Engine.priceCoverage(rows.filter((x) => keys.includes(x.s.sup)));
+    const sc = SCN[state.p.scenario];
+    const info = [
+      ["Сервис", "Умный Закуп — расчёт заказов поставщикам"],
+      ["Дата выгрузки данных", META.asOf.split("-").reverse().join(".")],
+      ["Дата формирования файла", new Date().toLocaleString("ru-RU")],
+      ["Поставщики", keys.map((k) => SUPS[k].name).join(", ")],
+      ["Сценарий", `${sc.label}: ${sc.note}`],
+      ...keys.map((k) => [`Срок поставки ${SUPS[k].name}, дн`, Math.round(state.p.lead[k] * 30)]),
+      ["Согласование заказа, дн", state.p.buffer],
+      ["Период пересмотра, дн", Math.round(state.p.review * 30)],
+      ["Прогноз прироста рынка, %", Math.round(state.p.growth * 100)],
+      ["Факторы расчёта", [["oneoff", "разовые заказы"], ["restore", "восстановление спроса"], ["season", "сезонность"], ["trend", "тренд"], ["transit", "товар в пути"]].map(([k, l]) => `${l}: ${state.p[k] ? "вкл" : "выкл"}`).join("; ")],
+      ["Строк к заказу", cov.lines],
+      ["Строк с известной ценой", `${cov.priced} (${cov.share == null ? "—" : Math.round(cov.share * 100) + "%"})`],
+      ["Стоимость по известным ценам, ₸", Math.round(cov.value)],
+      ["Внимание", "Стоимость неполная: у части позиций нет цены (в файле — «Нет данных», а не 0)."],
+      ["Статус", "Файл подготовлен для проверки и последующего импорта. Поставщику ничего не отправлено."],
+    ];
+    const wsInfo = XLSX.utils.aoa_to_sheet([["Параметр", "Значение"], ...info]);
+    wsInfo["!cols"] = [{ wch: 34 }, { wch: 110 }];
+    XLSX.utils.book_append_sheet(wb, wsInfo, "Параметры");
+    XLSX.writeFile(wb, `Заказ_поставщикам_${META.asOf}_${sc.label}.xlsx`);
   }
 
   // ---------------- drawer ----------------
