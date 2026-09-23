@@ -293,7 +293,10 @@ tr[tabindex]:focus-visible, .kpi[tabindex]:focus-visible, .cal-item:focus-visibl
 .params { position: fixed !important; top: 0; left: 0; bottom: 0; width: min(360px, 92vw); max-height: none !important; z-index: 55; background: var(--bg);
   padding: calc(14px + env(safe-area-inset-top, 0px)) 16px 24px; overflow-y: auto; transform: translateX(-102%); transition: transform .22s cubic-bezier(.2,.8,.2,1);
   display: flex !important; box-shadow: var(--shadow-lg); }
+.params { height: 100vh !important; height: 100dvh !important; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+.params > * { flex-shrink: 0; }
 .params.open { transform: none; }
+body.lock { overflow: hidden; }
 .params-head { display: flex; align-items: center; justify-content: space-between; font-size: 16px; padding: 2px 2px 4px; }
 .ctx { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; font-size: 13px; color: var(--text-2); }
 .ctx .c-item { display: inline-flex; align-items: center; gap: 6px; background: var(--surface); border: 1px solid var(--line); padding: 5px 10px; border-radius: 999px; }

@@ -213,8 +213,8 @@
       <button class="c-edit" id="ctxEdit">Изменить параметры</button>`;
     $("#ctxEdit").onclick = openParams;
   }
-  function openParams() { $("#params").classList.add("open"); $("#paramsScrim").hidden = false; }
-  function closeParams() { $("#params").classList.remove("open"); $("#paramsScrim").hidden = true; }
+  function openParams() { $("#params").classList.add("open"); $("#paramsScrim").hidden = false; document.body.classList.add("lock"); $("#params").scrollTop = 0; }
+  function closeParams() { $("#params").classList.remove("open"); $("#paramsScrim").hidden = true; document.body.classList.remove("lock"); }
 
   // ---------------- «Что делать сегодня» ----------------
   function reasonText(x) {
