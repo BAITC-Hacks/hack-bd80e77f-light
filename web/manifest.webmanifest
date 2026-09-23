@@ -1,0 +1,12 @@
+{
+  "name": "Умный Закуп — заказы поставщикам",
+  "short_name": "Умный Закуп",
+  "description": "Раннее предупреждение о дефиците и расчёт заказов поставщикам",
+  "lang": "ru",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f6f4",
+  "theme_color": "#2a78d6",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

@@ -10,7 +10,9 @@
 
 ## 🌐 [Открыть сервис: umny-zakup.vercel.app](https://umny-zakup.vercel.app)
 
-Работает круглосуточно в браузере — без установки и регистрации, на компьютере и телефоне.
+Работает круглосуточно в браузере — без установки и регистрации, на компьютере и телефоне. После первого открытия работает и без интернета.
+
+[![Проверка сайта](https://github.com/BAITC-Hacks/hack-bd80e77f-light/actions/workflows/uptime.yml/badge.svg)](https://github.com/BAITC-Hacks/hack-bd80e77f-light/actions/workflows/uptime.yml) [![Тесты](https://github.com/BAITC-Hacks/hack-bd80e77f-light/actions/workflows/tests.yml/badge.svg)](https://github.com/BAITC-Hacks/hack-bd80e77f-light/actions/workflows/tests.yml)
 
 [![Поставщики](https://img.shields.io/badge/Поставщики-IEK_и_Systeme_Electric-1677FF?style=for-the-badge)](#-что-мы-создали)
 [![Экспорт](https://img.shields.io/badge/Результат-Excel-217346?style=for-the-badge&logo=microsoftexcel&logoColor=white)](#-что-получает-менеджер)
@@ -410,6 +412,10 @@ hack-bd80e77f-light/
 
 Онлайн-версия: **https://umny-zakup.vercel.app** — статический сайт на Vercel (CDN), работает круглосуточно и не зависит от компьютера разработчика. Поисковая индексация отключена (`noindex`), так как в сервисе коммерческие данные партнёра.
 
+- **Без интернета.** При первом открытии браузер сохраняет все файлы сервиса (Service Worker). Дальше сервис открывается и считает офлайн; когда сеть есть, всегда загружается свежая версия. В шапке появляется метка «Офлайн».
+- **Мониторинг.** Каждые 3 часа GitHub Actions (`.github/workflows/uptime.yml`) на серверах GitHub проверяет сайт: доступность всех файлов, совпадение данных с репозиторием и расчёт по всем 2 944 артикулам. При сбое GitHub присылает письмо.
+- **Тесты.** При каждом изменении кода GitHub Actions запускает `pytest` (`.github/workflows/tests.yml`).
+
 Локально — открыть `web/index.html` в браузере: данные уже собраны, сервер не нужен.
 
 Пересчитать на новых выгрузках 1С и запустить локально:
@@ -437,7 +443,7 @@ PYTHONPATH=. pytest -q      # 27 passed
 Обновить онлайн-версию после пересчёта данных:
 
 ```bash
-npx vercel deploy --prod    # публикует папку web/ (настройки — vercel.json)
+bash scripts/deploy.sh      # публикует папку web/ на Vercel и сразу проверяет сайт
 ```
 
 </details>
