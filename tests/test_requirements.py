@@ -7,7 +7,7 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
-from engine.forecast import Params, build_orders, forecast_path, recommend, run_supplier
+from engine.forecast import Params, build_orders, forecast_path, recommend, run_supplier, stock_projection
 from engine.loaders import SupplierData
 
 AS_OF = date(2026, 9, 22)
@@ -178,6 +178,35 @@ def test_5_grouped_by_supplier_with_explanation():
     assert out["Обоснование"].str.len().min() > 50
     assert out["Обоснование"].str.contains("остаток").all()
     assert {"Код 1С", "Рекомендуемый заказ", "Срочность"} <= set(out.columns)
+
+
+def test_6_order_by_date():
+    """Календарь остатка: дата «заказать до» = падение ниже страхового запаса − срок поставки."""
+    stock = np.full(len(MONTHS), 200.0); stock[-1] = 400 + BASE[-1]   # сегодня ≈ 400 шт при спросе ~100/мес
+    sd = make_supplier({"X": BASE}, stock={"X": stock})
+    res = run_supplier(sd, AS_OF)
+    a, h = res["analyses"]["X"], res["hist"]
+    sku = {"moq": 1, "stock": res["skus"].loc["X", "stock_now"], "abc": "B"}
+    p = Params()
+    r = recommend(a, sku, [], h, p, AS_OF)
+    proj = stock_projection(a, r, [], h, p)
+    assert 90 <= proj["stockout_day"] <= 150, "400 шт при ~100 шт/мес хватит примерно на 4 месяца"
+    assert proj["order_by_day"] < proj["stockout_day"] - 45, "заказать нужно раньше, чем за срок поставки"
+
+    # приход товара в пути отодвигает и дефицит, и дату заказа
+    tr = [{"qty": 200.0, "eta": date(2026, 10, 15), "doc": "ПП-1"}]
+    r2 = recommend(a, sku, tr, h, p, AS_OF)
+    proj2 = stock_projection(a, r2, tr, h, p)
+    assert proj2["stockout_day"] > proj["stockout_day"]
+    assert proj2["order_by_day"] > proj["order_by_day"]
+
+    # без заказа при нулевом остатке — дефицит, дата заказа «вчера»
+    zero = np.full(len(MONTHS), 200.0); zero[-1] = 0
+    sd0 = make_supplier({"X": BASE}, stock={"X": zero})
+    res0 = run_supplier(sd0, AS_OF)
+    r0 = recommend(res0["analyses"]["X"], {"moq": 1, "stock": 0, "abc": "B"}, [], res0["hist"], p, AS_OF)
+    proj0 = stock_projection(res0["analyses"]["X"], r0, [], res0["hist"], p)
+    assert proj0["stockout_day"] == 0 and proj0["order_by_day"] < 0 and proj0["deficit"] > 400
 
 
 def test_no_auto_send():

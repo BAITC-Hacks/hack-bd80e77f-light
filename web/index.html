@@ -65,6 +65,7 @@
     <div class="kpis" id="kpis"></div>
     <nav class="tabs" role="tablist">
       <button class="tab active" data-tab="orders">Заказ поставщикам</button>
+      <button class="tab" data-tab="calendar">Календарь заказов</button>
       <button class="tab" data-tab="analytics">Аналитика</button>
       <button class="tab" data-tab="method">Как это работает</button>
     </nav>
@@ -81,6 +82,7 @@
         </select>
         <select id="sortSel" aria-label="Сортировка">
           <option value="urgency">Сначала срочные</option>
+          <option value="orderBy">По дате «заказать до»</option>
           <option value="value">По сумме заказа</option>
           <option value="qty">По количеству</option>
           <option value="name">По названию</option>
@@ -90,6 +92,7 @@
       <div id="orders"></div>
     </section>
 
+    <section id="tab-calendar" class="tabpane" hidden></section>
     <section id="tab-analytics" class="tabpane" hidden></section>
     <section id="tab-method" class="tabpane" hidden></section>
   </main>

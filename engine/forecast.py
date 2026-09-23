@@ -319,6 +319,46 @@ def recommend(a: SkuAnalysis, sku: dict, transit: list[dict], months: list[pd.Pe
     }
 
 
+def stock_projection(a: SkuAnalysis, r: dict, transit: list[dict], months: list[pd.Period], p: Params,
+                     order_qty: float = 0, days: int = 180, as_of: date = AS_OF) -> dict:
+    """Календарь остатка: остаток по дням без нового заказа и с заказом, размещённым сегодня.
+
+    Возвращает день, когда товар закончится, и «заказать до» — последний день, когда заказ
+    ещё успевает прийти раньше, чем остаток опустится ниже страхового запаса.
+    """
+    est = a.variants[(p.use_oneoff, p.use_restore, p.use_season)]
+    g = est["growth"] if p.use_trend else 0.0
+    rr = (1 + g) ** (1 / 12) - 1
+    last = months[len(a.raw) - 1]
+    anchor = last.year * 12 + last.month - 1 - (LEVEL_WINDOW - 1) / 2
+    lead_days = round(p.lead_time * 30)
+    inbound: dict[int, float] = {}
+    if p.use_transit:
+        for t in transit:
+            d = max(0, (t["eta"] - as_of).days) if t.get("eta") else round(lead_days / 2)
+            inbound[d] = inbound.get(d, 0) + t["qty"]
+    s0 = s1 = r["stock"]
+    out0 = below = None
+    deficit = 0.0
+    for i in range(days + 1):
+        day = pd.Timestamp(as_of) + pd.Timedelta(days=i)
+        am = day.year * 12 + day.month - 1
+        s = a.S[am % 12] if p.use_season else 1.0
+        daily = est["level"] * s * (1 + rr) ** (am - anchor) * (1 + p.growth) / day.days_in_month
+        s0 += inbound.get(i, 0); s1 += inbound.get(i, 0)
+        if i == lead_days:
+            s1 += order_qty
+        deficit += max(0.0, daily - max(s0, 0))
+        s0, s1 = max(s0 - daily, 0), max(s1 - daily, 0)
+        if daily > 0:
+            if out0 is None and s0 <= 0:
+                out0 = i
+            if below is None and s0 < max(r["safety"], daily):
+                below = i
+    return {"stockout_day": out0, "order_by_day": None if below is None else below - lead_days,
+            "deficit": deficit}
+
+
 def explain(r: dict, a: SkuAnalysis, sku: dict, p: Params, months: list[pd.Period]) -> str:
     """Текстовое обоснование рекомендованного количества."""
     parts = [f"Регулярный спрос ≈ {r['level']:.0f} {sku.get('unit', 'шт')}/мес"]

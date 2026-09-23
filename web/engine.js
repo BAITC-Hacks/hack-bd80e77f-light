@@ -31,7 +31,7 @@ const Engine = (() => {
   const sum = (a) => a.reduce((x, y) => x + y, 0);
   const variantKey = (p) => `${+p.oneoff}${+p.restore}${+p.season}`;
 
-  function calc(sku, p) {
+  function calcCore(sku, p) {
     const est = sku.v[variantKey(p)];
     const L = p.lead[sku.sup];
     const H = L + p.review;
@@ -63,6 +63,70 @@ const Engine = (() => {
     };
   }
 
+  // ---------------- календарь остатка ----------------
+  const DAY = 86400000;
+  const T0 = Date.UTC(Y, M - 1, D);
+  const dayOf = (iso) => Math.round((Date.parse(iso) - T0) / DAY);
+  const dateOf = (i) => new Date(T0 + i * DAY);
+  const daysIn = (y, m0) => new Date(Date.UTC(y, m0 + 1, 0)).getUTCDate();
+
+  /** Остаток по дням на `days` дней вперёд.
+   *  s0 — без нового заказа, s1 — если разместить заказ `orderQty` сегодня (придёт через срок поставки).
+   *  Товар в пути приходит в дату из файла поставщика; если даты нет — в середине срока поставки. */
+  function projection(sku, p, orderQty, days = 180, r = calcCore(sku, p)) {
+    const est = sku.v[variantKey(p)];
+    const g = p.trend ? est[1] : 0;
+    const rr = Math.pow(1 + g, 1 / 12) - 1;
+    const leadDays = Math.round(r.L * 30);
+    const arrivals = [];
+    if (p.transit) sku.tr.forEach((t) => {
+      const d = t[2] ? Math.max(0, dayOf(t[2])) : Math.round(leadDays / 2);
+      arrivals.push({ day: d, qty: t[1], doc: t[0], eta: !!t[2] });
+    });
+    const inbound = {};
+    arrivals.forEach((a) => (inbound[a.day] = (inbound[a.day] || 0) + a.qty));
+    let s0 = r.stock, s1 = r.stock;
+    let out0 = null, out1 = null, belowSS = null, belowSS1 = null, deficit0 = 0, deficit1 = 0;
+    const pts = [];
+    for (let i = 0; i <= days; i++) {
+      const dt = dateOf(i);
+      const am = dt.getUTCFullYear() * 12 + dt.getUTCMonth();
+      const s = p.season ? sku.S[am % 12] : 1;
+      const daily = (est[0] * s * Math.pow(1 + rr, am - META.anchor) * (1 + p.growth)) / daysIn(dt.getUTCFullYear(), dt.getUTCMonth());
+      if (inbound[i]) { s0 += inbound[i]; s1 += inbound[i]; }
+      if (i === leadDays) s1 += orderQty;
+      // продать можно только то, что есть; нехватка = упущенные продажи
+      deficit0 += Math.max(0, daily - Math.max(s0, 0));
+      deficit1 += Math.max(0, daily - Math.max(s1, 0));
+      s0 = Math.max(s0 - daily, 0);
+      s1 = Math.max(s1 - daily, 0);
+      if (daily > 0) {
+        if (out0 == null && s0 <= 0) out0 = i;
+        if (out1 == null && s1 <= 0 && i >= leadDays) out1 = i;
+        if (belowSS == null && s0 < Math.max(r.safety, daily)) belowSS = i;
+        if (belowSS1 == null && i > leadDays && s1 < Math.max(r.safety, daily)) belowSS1 = i;
+      }
+      pts.push([i, s0, s1, daily]);
+    }
+    return {
+      pts, arrivals, leadDays,
+      stockoutDay: out0,              // закончится без нового заказа
+      stockoutWithOrder: out1,        // закончится после прихода заказа, размещённого сегодня
+      orderByDay: belowSS == null ? null : belowSS - leadDays,   // последний день, чтобы успеть
+      nextOrderByDay: belowSS1 == null ? null : belowSS1 - leadDays, // следующий заказ после сегодняшнего
+      deficit: deficit0, deficitWithOrder: deficit1,
+    };
+  }
+
+  function calc(sku, p) {
+    const r = calcCore(sku, p);
+    const pr = projection(sku, p, r.qty, 180, r);
+    r.stockoutDay = pr.stockoutDay;
+    r.orderByDay = r.level > 0 ? pr.orderByDay : null;
+    r.deficit = pr.deficit;
+    return r;
+  }
+
   /** Вклад каждого фактора: заказ, если этот фактор выключить. */
   function sensitivity(sku, p) {
     const base = calc(sku, p).qty;
@@ -86,5 +150,5 @@ const Engine = (() => {
     return t;
   }
 
-  return { calc, sensitivity, explain, horizon };
+  return { calc, sensitivity, explain, horizon, projection, dateOf, T0 };
 })();

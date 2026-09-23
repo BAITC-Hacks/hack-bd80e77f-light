@@ -184,6 +184,28 @@ tbody tr:last-child td { border-bottom: 0; }
 .pill.planned { background: var(--plan-soft); color: var(--plan); }
 .pill.ok { background: var(--good-soft); color: var(--good); }
 
+.ob { font-weight: 600; white-space: nowrap; }
+.ob.crit { color: var(--crit); } .ob.warn { color: var(--warn); } .ob.plan { color: var(--text); } .ob.ok { color: var(--good); }
+.ob-sub { font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
+.say { margin: 0 0 10px; color: var(--text-2); font-size: 13.5px; }
+.say b { color: var(--text); }
+.cal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.cal-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 16px; display: flex; flex-direction: column; gap: 10px; box-shadow: var(--shadow); }
+.cal-card.now { border-color: color-mix(in srgb, var(--crit) 45%, var(--line)); }
+.cal-top { display: flex; justify-content: space-between; gap: 12px; }
+.cal-title { font-weight: 700; font-size: 15px; }
+.cal-sub { font-size: 12px; color: var(--text-3); }
+.cal-count { font-size: 28px; font-weight: 700; letter-spacing: -.02em; }
+.cal-card.now .cal-count { color: var(--crit); }
+.cal-stats { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; color: var(--text-2); }
+.cal-risk { font-size: 12.5px; background: var(--crit-soft); color: var(--crit); border-radius: 8px; padding: 6px 10px; }
+.cal-list { border-top: 1px solid var(--line); }
+.cal-item { display: flex; justify-content: space-between; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13px; cursor: pointer; }
+.cal-item:hover .ci-name { color: var(--accent-ink); }
+.ci-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.ci-date { color: var(--text-2); white-space: nowrap; }
+.cal-card .btn { align-self: flex-start; margin-top: auto; }
+
 /* ---------- drawer ---------- */
 .scrim { position: fixed; inset: 0; background: rgba(10, 10, 15, .32); z-index: 40; animation: fade .15s; }
 .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(760px, 100vw); background: var(--surface); z-index: 50; box-shadow: var(--shadow-lg); transform: translateX(100%); transition: transform .22s cubic-bezier(.2,.8,.2,1); overflow-y: auto; outline: none; }
