@@ -1,10 +1,10 @@
 <div align="center">
 
-<img src="assets/readme/title-banner-compact-v2.png" alt="Умный Закуп — система прогнозирования дефицита и планирования заказов" width="100%">
+<img src="assets/readme/title-banner-compact-v3.png" alt="Умный Закуп — система прогнозирования дефицита и планирования заказов" width="100%">
 
 <br>
 
-<img src="assets/readme/value-banner.png" alt="Дефицит забирает прибыль. Излишки забирают деньги из оборота. Система заранее показывает риски и помогает сохранить продажи через 45 дней. Заказчик — ТОО Электрокомплект, команда Light, HACKALEM AI 2026." width="100%"><a href="https://umny-zakup.vercel.app/"><img src="assets/readme/open-service-v2.svg" alt="Запустить сервис Умный Закуп" width="100%"></a>
+<img src="assets/readme/value-banner-v2.png" alt="Дефицит забирает прибыль. Излишки забирают деньги из оборота. Система заранее показывает риски и помогает сохранить продажи через 45 дней. Заказчик — ТОО Электрокомплект, команда Light, HACKALEM AI 2026." width="100%"><a href="https://umny-zakup.vercel.app/" target="_blank" rel="noopener noreferrer"><img src="assets/readme/open-service-v3.svg" alt="Запустить сервис Умный Закуп в новой вкладке" width="100%"></a>
 
 <br>
 
