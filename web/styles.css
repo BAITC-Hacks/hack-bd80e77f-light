@@ -558,3 +558,6 @@ h2.sec:first-child { margin-top: 4px; }
 @media (max-width: 1450px) { .asof { display: none; } }
 @media (max-width: 1200px) { .send-top .lbl { display: none; } }
 @media (max-width: 900px) { .search { min-width: 0; } }
+.os-link { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 13px; background: var(--good-soft); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+.os-link a { text-decoration: none; }
+a.btn { text-decoration: none; }

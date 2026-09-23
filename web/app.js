@@ -288,10 +288,10 @@
   const orderLines = (k, scope) => orderCandidates(k, scope).filter((x) => x.on && x.final > 0);
   const orderFile = (k) => `Заказ_${SUPS[k].name.replace(/\s+/g, "_")}_${META.asOf}.xlsx`;
 
-  function orderSummary(k, lines) {
+  function orderSummary(k, lines, pendingAt = null) {
     const cov = Engine.priceCoverage(lines);
     const units = lines.reduce((a, x) => a + x.final, 0);
-    const ap = state.approved[k];
+    const ap = state.approved[k] || (pendingAt ? { at: pendingAt } : null);
     const head = [
       `Заказ поставщику ${SUPS[k].name} от ${new Date().toLocaleDateString("ru-RU")}`,
       `Позиций: ${fmt(lines.length)}, штук: ${fmt(units)}`,
@@ -303,8 +303,18 @@
     return [...head, "", ...top, "", "Полный заказ — в файле Excel."].join("\n");
   }
 
+  /** Ссылка на WhatsApp/Telegram с готовым текстом. Это обычная ссылка <a>: переход по ней
+   *  браузер не блокирует (в отличие от window.open после скачивания файла). */
+  function shareUrl(kind, k, lines) {
+    const at = state.approved[k] ? null : new Date().toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+    const text = orderSummary(k, lines, at);
+    return kind === "wa"
+      ? `https://wa.me/?text=${encodeURIComponent(text)}`
+      : `https://t.me/share/url?url=${encodeURIComponent("https://umny-zakup.vercel.app")}&text=${encodeURIComponent(text)}`;
+  }
+
   function openOrderSheet(k, scope = sheet.scope) {
-    sheet = { k, scope, q: "" };
+    sheet = { k, scope, q: "", link: null };
     openId = null;
     const d = $("#drawer");
     d.innerHTML = `
@@ -353,9 +363,11 @@
         ${ap
           ? `<div class="step-done"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg>Согласовано ${esc(ap.at)} на этом устройстве <button class="btn sm ghost" id="osUnapprove">Изменить заказ</button></div>`
           : `<div class="os-howto"><b>1.</b> Снимите галочки с лишнего или добавьте товар через поиск ниже · <b>2.</b> Нажмите кнопку отправки — заказ будет согласован и откроется мессенджер</div>`}
+        ${sheet.link && sheet.k === k ? `<div class="os-link">Если ${sheet.link.kind === "wa" ? "WhatsApp" : "Telegram"} не открылся автоматически, нажмите:
+          <a class="btn share ${sheet.link.kind}" href="${esc(sheet.link.url)}" target="_blank" rel="noopener">Открыть ${sheet.link.kind === "wa" ? "WhatsApp" : "Telegram"} с текстом заказа</a></div>` : ""}
         <div class="send-row">
-          <button class="btn share wa" data-send="wa" ${lines.length ? "" : "disabled"}><svg viewBox="0 0 24 24"><path d="M4 20l1.3-4A8 8 0 1 1 8 19z"/></svg>${ap ? "WhatsApp" : "Согласовать и отправить в WhatsApp"}</button>
-          <button class="btn share tg" data-send="tg" ${lines.length ? "" : "disabled"}><svg viewBox="0 0 24 24"><path d="M21 4L3 11l6 2 2 6 3-4 5 4z"/></svg>${ap ? "Telegram" : "Согласовать и отправить в Telegram"}</button>
+          ${lines.length ? `<a class="btn share wa" data-send="wa" href="${esc(shareUrl("wa", k, lines))}" target="_blank" rel="noopener"><svg viewBox="0 0 24 24"><path d="M4 20l1.3-4A8 8 0 1 1 8 19z"/></svg>${ap ? "WhatsApp" : "Согласовать и отправить в WhatsApp"}</a>
+          <a class="btn share tg" data-send="tg" href="${esc(shareUrl("tg", k, lines))}" target="_blank" rel="noopener"><svg viewBox="0 0 24 24"><path d="M21 4L3 11l6 2 2 6 3-4 5 4z"/></svg>${ap ? "Telegram" : "Согласовать и отправить в Telegram"}</a>` : ""}
           <button class="btn share" data-send="mail" ${lines.length ? "" : "disabled"}><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>Почта</button>
           ${navigator.canShare ? `<button class="btn share" data-send="file" ${lines.length ? "" : "disabled"}><svg viewBox="0 0 24 24"><path d="M12 3v12M7 8l5-5 5 5M5 14v5h14v-5"/></svg>Поделиться файлом</button>` : ""}
           <button class="btn share" id="osXls"><svg viewBox="0 0 24 24"><path d="M12 4v11m0 0l-4-4m4 4l4-4M5 19h14"/></svg>Excel</button>
@@ -409,25 +421,32 @@
     $("#osXls").onclick = () => { xls(); toast("Excel скачан"); };
     if ($("#osApprove")) $("#osApprove").onclick = () => { approve(); render(); refreshSheet(); toast("Заказ согласован"); };
     if ($("#osUnapprove")) $("#osUnapprove").onclick = () => { delete state.approved[k]; store.set("approved", state.approved); render(); refreshSheet(); };
-    const go = (url) => window.open(url, "_blank", "noopener");
-    $$("[data-send]").forEach((b) => (b.onclick = async () => {
-      const a = approve();                         // нажатие кнопки = подтверждение менеджера
-      const text = orderSummary(k, lines);
+    $$("[data-send]").forEach((b) => (b.onclick = async (e) => {
       const kind = b.dataset.send;
+      const a = approve();                         // нажатие = подтверждение менеджера
+      const later = () => setTimeout(() => { render(); refreshSheet(); }, 60);
+      if (kind === "wa" || kind === "tg") {
+        // переход по ссылке делает сам браузер (не блокируется); Excel — следом
+        sheet.link = { url: b.getAttribute("href"), kind };
+        setTimeout(() => xls(a), 700);
+        toast(`Открывается ${kind === "wa" ? "WhatsApp" : "Telegram"}, Excel скачивается — приложите его к сообщению`);
+        later();
+        return;
+      }
+      e.preventDefault();
+      const text = orderSummary(k, lines);
       if (kind === "file") {
         const blob = new Blob([XLSX.write(buildWorkbook([k], () => lines, `Согласовано ${a.at}`), { type: "array", bookType: "xlsx" })], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
         const file = new File([blob], orderFile(k), { type: blob.type });
         if (navigator.canShare && navigator.canShare({ files: [file] })) {
           try { await navigator.share({ files: [file], title: `Заказ ${SUPS[k].name}`, text: text.split("\n").slice(0, 3).join("\n") }); } catch { /* отменено */ }
         } else { xls(a); toast("Это устройство не умеет делиться файлом — Excel скачан"); }
-      } else {
-        xls(a);
-        if (kind === "wa") go(`https://wa.me/?text=${encodeURIComponent(text)}`);
-        if (kind === "tg") go(`https://t.me/share/url?url=${encodeURIComponent("https://umny-zakup.vercel.app")}&text=${encodeURIComponent(text)}`);
-        if (kind === "mail") location.href = `mailto:?subject=${encodeURIComponent(`Заказ поставщику ${SUPS[k].name}`)}&body=${encodeURIComponent(text.split("\n").slice(0, 8).join("\n") + "\n\nФайл Excel во вложении.")}`;
-        toast("Заказ согласован, Excel скачан — выберите получателя в мессенджере");
+      } else if (kind === "mail") {
+        location.href = `mailto:?subject=${encodeURIComponent(`Заказ поставщику ${SUPS[k].name}`)}&body=${encodeURIComponent(text.split("\n").slice(0, 8).join("\n") + "\n\nФайл Excel во вложении.")}`;
+        setTimeout(() => xls(a), 700);
+        toast("Открыта почта, Excel скачивается — приложите его к письму");
       }
-      render(); refreshSheet();
+      later();
     }));
   }
 
