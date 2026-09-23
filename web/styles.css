@@ -582,3 +582,4 @@ a.btn { text-decoration: none; }
 @media (max-width: 600px) { .os-bar { padding-left: 16px; padding-right: 16px; } .os-bar .send-row { margin-left: 0 !important; width: 100%; } .os-bar #osNext { width: 100%; justify-content: center; } }
 .c-sel select { border: 0; background: transparent; font: inherit; font-weight: 600; color: var(--text); padding: 0 2px; max-width: 190px; cursor: pointer; }
 .c-sel select:focus { outline: none; }
+.sb-add { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 14px; }

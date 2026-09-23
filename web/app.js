@@ -63,9 +63,12 @@
     limit: {},
   };
   let rows = [];
+  // товары, добавленные менеджером вручную (вкладка «Проверить расчёт»), — хранятся в этом браузере
+  state.custom = store.get("custom", []);
+  const allSkus = () => DATA.skus.concat(state.custom);
 
   function recompute() {
-    rows = DATA.skus.map((s) => {
+    rows = allSkus().map((s) => {
       const r = Engine.calc(s, state.p);
       const ov = state.overrides[s.id];
       const final = ov != null ? ov : r.qty;
@@ -391,7 +394,7 @@
         <thead><tr><th style="width:34px"></th><th>Товар</th><th>Статус</th><th class="r">Заказать, шт</th></tr></thead>
         <tbody>${shown.slice(0, 400).map((x) => `<tr class="${x.on ? "" : "off"}">
           <td><input type="checkbox" data-on="${esc(x.s.id)}" ${x.on ? "checked" : ""} aria-label="Заказать этот товар"></td>
-          <td><div class="p-name">${esc(x.s.n)}${x.manual ? ' <span class="badge in">добавлен вручную</span>' : ""}</div><div class="p-meta"><span>${esc(x.s.id)}</span>${x.s.art ? `<span>${esc(x.s.art)}</span>` : ""}<span>остаток ${fmt(x.r.stock)}</span></div></td>
+          <td><div class="p-name">${esc(x.s.n)}${x.manual || x.s.manual ? ' <span class="badge in">добавлен вручную</span>' : ""}</div><div class="p-meta"><span>${esc(x.s.id)}</span>${x.s.art ? `<span>${esc(x.s.art)}</span>` : ""}<span>остаток ${fmt(x.r.stock)}</span></div></td>
           <td>${statusPill(x.r.status)}</td>
           <td class="r"><input class="qty-input ${state.overrides[x.s.id] != null ? "edited" : ""}" type="number" min="0" step="${x.s.moq}" value="${x.final}" data-oq="${esc(x.s.id)}" ${x.on ? "" : "disabled"} aria-label="Количество">${x.on && !(x.final > 0) ? '<div class="rec-hint" style="color:var(--warn)">укажите количество</div>' : ""}</td>
         </tr>`).join("")}</tbody></table></div>
@@ -1352,7 +1355,7 @@
   function scenarioStats() {
     const key = JSON.stringify([state.p, state.sup, Object.keys(state.overrides).length]);
     if (scenCache.key === key) return scenCache.val;
-    const base = DATA.skus.filter((sk) => state.sup === "all" || sk.sup === state.sup);
+    const base = allSkus().filter((sk) => state.sup === "all" || sk.sup === state.sup);
     const val = {};
     Object.keys(SCN).forEach((k) => {
       const p = { ...state.p, scenario: k };
@@ -1653,7 +1656,18 @@
         <p class="say" style="margin-top:10px">${esc(Engine.explain(s, r, state.p))}</p>
         ${factorTable(s, r, row)}
         <div style="margin-top:14px">${stockChart(s, r, r.qty)}</div>
-        <button class="btn primary" id="sbOpen" style="margin-top:12px">Открыть подробный расчёт</button>
+        <button class="btn" id="sbOpen" style="margin-top:12px">Открыть подробный расчёт</button>
+        <div class="sb-add">
+          <h4 style="margin:0 0 8px">Добавить этот товар в заказ поставщику</h4>
+          <div class="sb-fields">
+            <label>Название товара<input id="sbName" value="${esc(sb.name || "")}" placeholder="например, Автомат ВА47-29 16А"></label>
+            <label>Код 1С или артикул<input id="sbCode" value="${esc(sb.code || "")}" placeholder="необязательно"></label>
+            <label>Поставщик<select id="sbSup">${Object.entries(REAL_SUPS).map(([key, v]) => `<option value="${key}" ${sb.prof === key ? "selected" : ""}>${esc(v.name)}</option>`).join("")}</select></label>
+          </div>
+          <button class="btn primary" id="sbAdd" style="margin-top:10px">+ Добавить в заказ поставщику</button>
+          <p class="muted" style="font-size:12px;margin:6px 0 0">Товар появится на дашборде, в таблице заказа и в отправке WhatsApp / Telegram с пометкой «добавлен вручную». Срок поставки — как у выбранного поставщика. Хранится в этом браузере.</p>
+          ${state.custom.length ? `<div class="list" style="margin-top:10px">${state.custom.map((c) => `<div class="list-row"><span><b>${esc(c.n)}</b><br><span class="muted">${esc(SUPS[c.sup].name)}${c.art ? " · " + esc(c.art) : ""}</span></span><button class="btn sm ghost" data-cdel="${esc(c.id)}">Удалить</button></div>`).join("")}</div>` : ""}
+        </div>
       </div>
     </div>`;
     bindStock($("#tab-sandbox"));
@@ -1680,6 +1694,24 @@
     $("#sbReset").onclick = () => { state.sb = blankSb(); sbPrev = null; saveSb(); renderSandbox(); };
     $$("[data-q]", T).forEach((el) => el.onclick = () => sbQuick(el.dataset.q));
     $("#sbOpen").onclick = () => openDrawer(SB_ID);
+    $("#sbName").oninput = (e) => { state.sb.name = e.target.value; saveSb(); };
+    $("#sbCode").oninput = (e) => { state.sb.code = e.target.value; saveSb(); };
+    $("#sbAdd").onclick = () => {
+      const name = $("#sbName").value.trim();
+      if (!name) { toast("Укажите название товара"); $("#sbName").focus(); return; }
+      const sup = $("#sbSup").value;
+      const base = sandboxRow().s;
+      const item = { ...base, id: `MAN-${Date.now().toString(36)}`, n: name, art: $("#sbCode").value.trim() || null, sup, g: "Добавлено вручную", manual: 1 };
+      delete item.pc; delete item.wh;
+      state.custom.push(item);
+      store.set("custom", state.custom);
+      recompute(); render(); renderSandbox();
+      toast(`«${name}» добавлен в заказ ${SUPS[sup].name}`);
+    };
+    $$("[data-cdel]", T).forEach((b) => (b.onclick = () => {
+      state.custom = state.custom.filter((c) => c.id !== b.dataset.cdel);
+      store.set("custom", state.custom); recompute(); render(); renderSandbox();
+    }));
   }
   let sbTimer;
 
