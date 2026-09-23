@@ -298,9 +298,11 @@
       cov.priced ? `Сумма по себестоимости (известные цены): ${money(cov.value)}` : null,
       ap ? `Согласовано: ${ap.at}` : null,
     ].filter(Boolean);
-    const top = lines.slice(0, 15).map((x, i) => `${i + 1}. ${x.s.art || x.s.id} — ${x.s.n} — ${fmt(x.final)} шт`);
-    if (lines.length > 15) top.push(`…и ещё ${fmt(lines.length - 15)} позиций — в файле Excel`);
-    return [...head, "", ...top, "", "Полный заказ — в файле Excel."].join("\n");
+    // весь заказ в тексте, если он умещается в сообщение; иначе первые 30 позиций
+    const all = lines.length <= 50;
+    const top = (all ? lines : lines.slice(0, 30)).map((x, i) => `${i + 1}. ${x.s.art || x.s.id} — ${x.s.n} — ${fmt(x.final)} шт`);
+    if (!all) top.push(`…и ещё ${fmt(lines.length - 30)} позиций — полный список в файле Excel`);
+    return [...head, "", ...top].join("\n");
   }
 
   /** Ссылка на WhatsApp/Telegram с готовым текстом. Это обычная ссылка <a>: переход по ней
@@ -364,7 +366,8 @@
           ? `<div class="step-done"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg>Согласовано ${esc(ap.at)} на этом устройстве <button class="btn sm ghost" id="osUnapprove">Изменить заказ</button></div>`
           : `<div class="os-howto"><b>1.</b> Снимите галочки с лишнего или добавьте товар через поиск ниже · <b>2.</b> Нажмите кнопку отправки — заказ будет согласован и откроется мессенджер</div>`}
         ${sheet.link && sheet.k === k ? `<div class="os-link">Если ${sheet.link.kind === "wa" ? "WhatsApp" : "Telegram"} не открылся автоматически, нажмите:
-          <a class="btn share ${sheet.link.kind}" href="${esc(sheet.link.url)}" target="_blank" rel="noopener">Открыть ${sheet.link.kind === "wa" ? "WhatsApp" : "Telegram"} с текстом заказа</a></div>` : ""}
+          <a class="btn share ${sheet.link.kind}" href="${esc(sheet.link.url)}" target="_blank" rel="noopener">Открыть ${sheet.link.kind === "wa" ? "WhatsApp" : "Telegram"} с текстом заказа</a>
+          <span class="muted">Нужен файл для поставщика? Нажмите «Excel» и приложите его к сообщению.</span></div>` : ""}
         <div class="send-row">
           ${lines.length ? `<a class="btn share wa" data-send="wa" href="${esc(shareUrl("wa", k, lines))}" target="_blank" rel="noopener"><svg viewBox="0 0 24 24"><path d="M4 20l1.3-4A8 8 0 1 1 8 19z"/></svg>${ap ? "WhatsApp" : "Согласовать и отправить в WhatsApp"}</a>
           <a class="btn share tg" data-send="tg" href="${esc(shareUrl("tg", k, lines))}" target="_blank" rel="noopener"><svg viewBox="0 0 24 24"><path d="M21 4L3 11l6 2 2 6 3-4 5 4z"/></svg>${ap ? "Telegram" : "Согласовать и отправить в Telegram"}</a>` : ""}
@@ -373,7 +376,7 @@
           <button class="btn share" id="osXls"><svg viewBox="0 0 24 24"><path d="M12 4v11m0 0l-4-4m4 4l4-4M5 19h14"/></svg>Excel</button>
           ${ap ? "" : `<button class="btn sm ghost" id="osApprove" ${lines.length ? "" : "disabled"}>Только согласовать</button>`}
         </div>
-        <p class="muted" style="font-size:12px;margin:8px 0 0">Сервис ничего не отправляет сам: откроется WhatsApp или Telegram с готовым текстом заказа (итоги и первые 15 позиций), получателя выбираете вы. На компьютере Excel скачается — приложите его к сообщению; на телефоне «Поделиться файлом» отправит Excel сразу.</p>
+        <p class="muted" style="font-size:12px;margin:8px 0 0">Сервис ничего не отправляет сам: откроется WhatsApp или Telegram с готовым текстом заказа (${lines.length <= 50 ? "все позиции" : "итоги и первые 30 позиций"}), получателя выбираете вы. Файл скачивается только кнопкой «Excel»${navigator.canShare ? "; «Поделиться файлом» отправит Excel сразу" : ""}.</p>
       </div>`;
     // найденные товары поставщика, которых нет в списке — можно добавить
     const inList = new Set(cand.map((x) => x.s.id));
@@ -428,8 +431,7 @@
       if (kind === "wa" || kind === "tg") {
         // переход по ссылке делает сам браузер (не блокируется); Excel — следом
         sheet.link = { url: b.getAttribute("href"), kind };
-        setTimeout(() => xls(a), 700);
-        toast(`Открывается ${kind === "wa" ? "WhatsApp" : "Telegram"}, Excel скачивается — приложите его к сообщению`);
+        toast(`Открывается ${kind === "wa" ? "WhatsApp" : "Telegram"} с текстом заказа`);
         later();
         return;
       }
@@ -442,9 +444,8 @@
           try { await navigator.share({ files: [file], title: `Заказ ${SUPS[k].name}`, text: text.split("\n").slice(0, 3).join("\n") }); } catch { /* отменено */ }
         } else { xls(a); toast("Это устройство не умеет делиться файлом — Excel скачан"); }
       } else if (kind === "mail") {
-        location.href = `mailto:?subject=${encodeURIComponent(`Заказ поставщику ${SUPS[k].name}`)}&body=${encodeURIComponent(text.split("\n").slice(0, 8).join("\n") + "\n\nФайл Excel во вложении.")}`;
-        setTimeout(() => xls(a), 700);
-        toast("Открыта почта, Excel скачивается — приложите его к письму");
+        location.href = `mailto:?subject=${encodeURIComponent(`Заказ поставщику ${SUPS[k].name}`)}&body=${encodeURIComponent(text.split("\n").slice(0, 25).join("\n"))}`;
+        toast("Открыта почта с текстом заказа");
       }
       later();
     }));
