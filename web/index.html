@@ -51,18 +51,18 @@
       <h3>Параметры расчёта</h3>
       <div class="field" id="leadFields"></div>
       <div class="field">
-        <label for="buffer">Согласование заказа <b id="bufferVal"></b></label>
-        <input type="range" id="buffer" min="0" max="10" step="1">
+        <label for="bufferNum">Согласование заказа <span class="numin"><input type="number" id="bufferNum" min="0" max="60" step="1" inputmode="numeric"> дн</span></label>
+        <input type="range" id="buffer" min="0" max="30" step="1" aria-label="Согласование заказа, дни">
         <small>дни внутри компании до отправки заказа</small>
       </div>
       <div class="field">
-        <label for="review">Период пересмотра <b id="reviewVal"></b></label>
-        <input type="range" id="review" min="0.5" max="3" step="0.5">
+        <label for="reviewNum">Период пересмотра <span class="numin"><input type="number" id="reviewNum" min="7" max="180" step="1" inputmode="numeric"> дн</span></label>
+        <input type="range" id="review" min="7" max="120" step="1" aria-label="Период пересмотра, дни">
         <small>как часто размещаем заказ поставщику</small>
       </div>
       <div class="field">
-        <label for="growth">Прогноз прироста рынка <b id="growthVal"></b></label>
-        <input type="range" id="growth" min="-30" max="50" step="5">
+        <label for="growthNum">Прогноз прироста рынка <span class="numin"><input type="number" id="growthNum" min="-90" max="300" step="1" inputmode="numeric"> %</span></label>
+        <input type="range" id="growth" min="-50" max="100" step="1" aria-label="Прогноз прироста рынка, %">
         <small>ручная поправка поверх тренда</small>
       </div>
     </section>
@@ -84,6 +84,7 @@
       <button class="tab" data-tab="orders">Заказ поставщикам</button>
       <button class="tab" data-tab="calendar">Календарь заказов</button>
       <button class="tab" data-tab="scenarios">Сценарии и бюджет</button>
+      <button class="tab" data-tab="sandbox">Проверить расчёт</button>
       <button class="tab" data-tab="analytics">Аналитика</button>
       <button class="tab" data-tab="method">Методика и данные</button>
     </nav>
@@ -123,6 +124,7 @@
 
     <section id="tab-calendar" class="tabpane" hidden></section>
     <section id="tab-scenarios" class="tabpane" hidden></section>
+    <section id="tab-sandbox" class="tabpane" hidden></section>
     <section id="tab-analytics" class="tabpane" hidden></section>
     <section id="tab-method" class="tabpane" hidden></section>
   </main>

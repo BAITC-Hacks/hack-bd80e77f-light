@@ -9,7 +9,7 @@
   st  текущий остаток   wh  остатки по складам   tr  товар в пути [документ, шт, ETA|null]
   raw / cln / rst  продажи: факт / без разовых заказов / + восстановленный спрос (по месяцам)
   av  доля месяца в наличии (если был stockout)  cap месяцы, срезанные фильтром Хампеля
-  oo  разовые заказы [месяц, накладная, дата, шт, медиана]
+  oo  разовые заказы [месяц, "" (номер накладной не публикуется), дата, шт, медиана]
   S   сезонность (12)   sw  вес собственного профиля
   v   оценки по вариантам факторов "разовые|stockout|сезонность" → [уровень, тренд, σ]
   nh  месяцев истории   rt  число возвратов в накладных
@@ -55,7 +55,8 @@ def export_sku(code: str, res: dict) -> dict | None:
         "g": s["group"], "mq": int(bool(s.get("moq_known", False))),
         "pr": None if pd.isna(s["price"]) or s["price"] <= 0 else round(float(s["price"]), 2),
         "raw": _r(a.raw, 0), "cln": _r(a.clean, 1), "rst": _r(a.restored, 1), "sw": round(a.season_w, 2),
-        "oo": [[mi[row.month], str(row.doc), row.date.strftime("%d.%m.%Y"), float(row.qty), float(row.median)]
+        # номера накладных не публикуются (коммерческие данные): только месяц, дата, объём и обычный размер
+        "oo": [[mi[row.month], "", row.date.strftime("%d.%m.%Y"), float(row.qty), float(row.median)]
                for row in oo.itertuples() if row.month in mi],
     })
     rt = res["supplier"].lines.attrs.get("returns")
@@ -127,6 +128,15 @@ def main():
             if d:
                 d["sup"] = r["supplier"].key
                 data["skus"].append(d)
+
+    try:   # охват каталога и причины исключения SKU (engine/coverage.py), если модуль есть
+        from .coverage import coverage_stats
+        meta = data["meta"]
+        recommended = sum(1 for d in data["skus"]
+                          if plan(d, Params(lead_time=meta["suppliers"][d["sup"]]["lead"]), meta["anchor"], AS_OF)["qty"] > 0)
+        meta["coverage"] = coverage_stats(results, {d["id"] for d in data["skus"]}, recommended)
+    except ImportError:
+        pass
 
     WEB.mkdir(exist_ok=True)
     js = "window.DATA = " + json.dumps(data, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + ";\n"

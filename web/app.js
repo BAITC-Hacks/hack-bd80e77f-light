@@ -3,6 +3,9 @@
   const DATA = window.DATA;
   const META = DATA.meta;
   const SUPS = META.suppliers;
+  const REAL_SUPS = { ...SUPS };
+  const SB_ID = "__manual__";
+  const supName = (k) => (SUPS[k] ? SUPS[k].name : "Ручная проверка");
   const $ = (s, el = document) => el.querySelector(s);
   const $$ = (s, el = document) => [...el.querySelectorAll(s)];
   const fmt = (x, d = 0) => (x == null || !isFinite(x) ? "—" : Number(x).toLocaleString("ru-RU", { maximumFractionDigits: d, minimumFractionDigits: d }));
@@ -12,7 +15,7 @@
   const dayDate = (i) => { const d = Engine.dateOf(i); return `${d.getUTCDate()} ${MON[d.getUTCMonth()]}`; };
   const inDays = (i) => (i <= 0 ? "сегодня" : i === 1 ? "завтра" : `через ${fmt(i)} дн`);
   const WINDOWS = [
-    { k: "now", label: "Сегодня", sub: "срок уже наступил", test: (d) => d != null && d <= 0 },
+    { k: "now", label: "Сегодня", sub: "срок уже наступил", test: (d) => d != null && d <= 0 },   // вместе с final > 0 = Engine.isOrderToday
     { k: "w1", label: "Эта неделя", sub: "1–7 дней", test: (d) => d >= 1 && d <= 7 },
     { k: "w2", label: "Следующая неделя", sub: "8–14 дней", test: (d) => d >= 8 && d <= 14 },
     { k: "m1", label: "В этом месяце", sub: "15–30 дней", test: (d) => d >= 15 && d <= 30 },
@@ -74,7 +77,7 @@
 
   // ---------------- params panel ----------------
   const TOGGLES = [
-    ["oneoff", "Исключать разовые заказы", "крупные разовые продажи одному клиенту"],
+    ["oneoff", "Исключать разовые заказы", "крупные разовые накладные (поля клиента в выгрузке нет)"],
     ["restore", "Восстанавливать упущенный спрос", "месяцы, когда товара не было на складе"],
     ["season", "Сезонность", "профиль поставщика + история товара"],
     ["trend", "Тренд роста", "рост/падение спроса год к году"],
@@ -82,23 +85,19 @@
   ];
 
   function buildParams() {
-    $("#leadFields").innerHTML = Object.entries(SUPS).map(([k, v]) => `
+    $("#leadFields").innerHTML = Object.entries(REAL_SUPS).map(([k, v]) => `
       <div class="field">
-        <label for="lead-${k}">Срок поставки ${esc(v.name)} <b id="leadVal-${k}"></b></label>
-        <input type="range" id="lead-${k}" data-sup="${k}" min="0.5" max="4" step="0.5">
+        <label for="leadNum-${k}">Срок поставки ${esc(v.name)} <span class="numin"><input type="number" id="leadNum-${k}" data-sup="${k}" min="1" max="365" step="1" inputmode="numeric"> дн</span></label>
+        <input type="range" id="lead-${k}" data-sup="${k}" min="7" max="120" step="1" aria-label="Срок поставки ${esc(v.name)}, дни">
       </div>`).join("");
-    $$("#leadFields input").forEach((el) => {
-      el.value = state.p.lead[el.dataset.sup];
-      el.addEventListener("input", () => { state.p.lead[el.dataset.sup] = +el.value; onParams(); });
-    });
+    // ползунок и поле ввода — одно значение в днях; в расчёте хранится в месяцах (дни / 30)
+    bindNum("#lead-{k}", "#leadNum-{k}", (k) => Math.round(state.p.lead[k] * 30), (k, d) => { state.p.lead[k] = d / 30; }, 1, 365);
     $("#scenSeg").innerHTML = Object.entries(SCN).map(([k, v]) => `<button role="radio" aria-checked="${state.p.scenario === k}" class="${state.p.scenario === k ? "active" : ""}" data-sc="${k}">${v.label}</button>`).join("");
     $$("#scenSeg button").forEach((b) => (b.onclick = () => setScenario(b.dataset.sc)));
-    $("#buffer").value = state.p.buffer;
-    $("#buffer").oninput = (e) => { state.p.buffer = +e.target.value; onParams(); };
-    $("#review").value = state.p.review;
-    $("#growth").value = Math.round(state.p.growth * 100);
-    $("#review").oninput = (e) => { state.p.review = +e.target.value; onParams(); };
-    $("#growth").oninput = (e) => { state.p.growth = +e.target.value / 100; onParams(); };
+    bindPair("#buffer", "#bufferNum", () => state.p.buffer, (d) => { state.p.buffer = d; }, 0, 60);
+    bindPair("#review", "#reviewNum", () => Math.round(state.p.review * 30), (d) => { state.p.review = d / 30; }, 7, 180);
+    bindPair("#growth", "#growthNum", () => Math.round(state.p.growth * 100), (d) => { state.p.growth = d / 100; }, -90, 300);
+
     $("#toggles").innerHTML = TOGGLES.map(([k, t, sub]) => `
       <label class="toggle">
         <span class="t-text"><span class="t-title">${t}</span><br><span class="t-sub">${sub}</span></span>
@@ -107,17 +106,35 @@
     $$("#toggles input").forEach((el) => el.addEventListener("change", () => { state.p[el.dataset.k] = el.checked; onParams(); }));
     $("#resetParams").addEventListener("click", () => {
       state.p = JSON.parse(JSON.stringify(defaults));
+      pairs.length = 0;
       buildParams(); onParams();
     });
     paramLabels();
   }
-  const months = (x) => `${fmt(x, x % 1 ? 1 : 0)} мес`;
+  const months = (x) => { const d = Math.round(x * 30); return d % 30 ? `${fmt(d)} дн` : `${fmt(d / 30, 1)} мес`; };
+  /** Ползунок + поле точного ввода: одно значение, синхронизируются в обе стороны. */
+  const pairs = [];
+  function bindPair(rangeSel, numSel, get, set, min, max) {
+    const r = $(rangeSel), n = $(numSel);
+    const apply = (v, from) => {
+      if (!isFinite(v)) return;
+      const d = Math.min(max, Math.max(min, Math.round(v)));
+      set(d);
+      if (from !== r) r.value = d;
+      if (from !== n) n.value = d;
+      onParams();
+    };
+    r.oninput = () => apply(+r.value, r);
+    n.oninput = () => { if (n.value !== "" && n.value !== "-") apply(+n.value, n); };
+    n.onchange = () => { n.value = get(); r.value = get(); };
+    pairs.push(() => { r.value = get(); n.value = get(); });
+    r.value = get(); n.value = get();
+  }
+  function bindNum(rangeTpl, numTpl, get, set, min, max) {
+    Object.keys(REAL_SUPS).forEach((k) => bindPair(rangeTpl.replace("{k}", k), numTpl.replace("{k}", k), () => get(k), (d) => set(k, d), min, max));
+  }
   function paramLabels() {
-    Object.keys(SUPS).forEach((k) => { $(`#leadVal-${k}`).textContent = months(state.p.lead[k]); });
-    $("#reviewVal").textContent = months(state.p.review);
-    const g = Math.round(state.p.growth * 100);
-    $("#growthVal").textContent = (g > 0 ? "+" : "") + g + "%";
-    $("#bufferVal").textContent = `${state.p.buffer} дн`;
+    pairs.forEach((f) => f());
     $("#scenNote").innerHTML = `<b>${SCN[state.p.scenario].label}:</b> ${esc(SCN[state.p.scenario].note)}. <span class="muted">Демонстрационные допущения, а не вероятности.</span>`;
     $$("#scenSeg button").forEach((b) => { const on = b.dataset.sc === state.p.scenario; b.classList.toggle("active", on); b.setAttribute("aria-checked", on); });
   }
@@ -161,12 +178,12 @@
   // ---------------- KPIs ----------------
   function renderKpis() {
     const base = baseRows();
-    const today = base.filter((x) => x.r.safeDay != null && x.r.safeDay <= 0);
+    const today = base.filter(Engine.isOrderToday);
     const deficit = base.filter((x) => x.r.expectedDeficit);
     const crit = base.filter((x) => x.r.urgency === "critical");
     const cov = Engine.priceCoverage(base);
     const cards = [
-      { label: "Заказать сегодня", dot: "var(--crit)", value: fmt(today.length), sub: "последний безопасный день наступил или прошёл", act: () => setFilter({ urg: "all", st: "all", win: "now", onlyOrder: false, sort: "action" }) },
+      { label: "Заказать сегодня", dot: "var(--crit)", value: fmt(today.length), sub: "последний безопасный день наступил или прошёл", act: () => setFilter({ urg: "all", st: "all", win: "now", onlyOrder: true, sort: "action" }) },
       { label: "Ожидаемый дефицит", dot: "var(--crit)", value: fmt(deficit.length), sub: "закончатся раньше, чем придёт заказ, размещённый сегодня", act: () => setFilter({ urg: "all", st: "all", win: null, onlyOrder: false, sort: "action", deficitOnly: true }) },
       { label: "Критические позиции", dot: "var(--crit)", value: fmt(crit.length), sub: "запаса и товара в пути не хватит на срок поставки", act: () => setFilter({ urg: "critical", st: "all", win: null, onlyOrder: true }) },
       { label: "Стоимость по известным ценам", value: cov.priced ? money(cov.value) : "Нет данных", sub: `по ${fmt(cov.priced)} из ${fmt(cov.lines)} строк заказа · сумма неполная`, warn: cov.missing > 0 },
@@ -306,9 +323,9 @@
           <span>Срок поставки: <b>${months(state.p.lead[k])}</b></span>
         </div>
         <div class="sup-actions">
-          ${ap ? `<span class="approved-badge"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg>Утверждён ${esc(ap.at)}</span>
+          ${ap ? `<span class="approved-badge"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg>Отмечен как согласованный · ${esc(ap.at)} · на этом устройстве</span>
                   <button class="btn sm" data-unapprove="${k}">Изменить</button>`
-               : `<button class="btn sm success" data-approve="${k}">Утвердить заказ</button>`}
+               : `<button class="btn sm success" data-approve="${k}">Отметить согласованным</button>`}
         </div>
       </div>
       <div class="table-wrap"><table>
@@ -397,8 +414,8 @@
     const edited = lines.filter((x) => state.overrides[x.s.id] != null).length;
     const m = $("#modal");
     m.innerHTML = `<div class="modal-box" role="dialog" aria-modal="true">
-      <h3>Утвердить заказ ${esc(SUPS[k].name)}?</h3>
-      <p>Заказ будет зафиксирован и подготовлен к выгрузке в 1С. Поставщику он <b>не отправляется</b> — это делает менеджер.</p>
+      <h3>Отметить заказ ${esc(SUPS[k].name)} как согласованный?</h3>
+      <p>Отметка сохраняется <b>только на этом устройстве</b> (в браузере) и может исчезнуть при очистке данных браузера — это не журнал согласований. Будет выгружен Excel для проверки и последующего импорта в учётную систему. Поставщику заказ <b>не отправляется</b> — это делает менеджер.</p>
       <div class="list">
         <div class="list-row"><span>Позиций</span><b class="num">${fmt(lines.length)}</b></div>
         <div class="list-row"><span>Штук</span><b class="num">${fmt(lines.reduce((a, x) => a + x.final, 0))}</b></div>
@@ -408,7 +425,7 @@
       </div>
       <div class="modal-actions">
         <button class="btn" data-close>Отмена</button>
-        <button class="btn success" data-ok>Утвердить и выгрузить</button>
+        <button class="btn success" data-ok>Отметить и выгрузить Excel</button>
       </div></div>`;
     m.hidden = false;
     $("[data-close]", m).onclick = () => (m.hidden = true);
@@ -420,7 +437,7 @@
       m.hidden = true;
       render();
       exportXlsx([k]);
-      toast(`Заказ ${SUPS[k].name} утверждён и выгружен. Отправку поставщику делает менеджер`);
+      toast(`Заказ ${SUPS[k].name} отмечен на этом устройстве, Excel выгружен. Поставщику ничего не отправлено`);
     };
   }
 
@@ -429,7 +446,7 @@
     const wb = XLSX.utils.book_new();
     const ctx = {
       supName: (k) => SUPS[k].name, urgLabel: (u) => URG[u].label,
-      approval: (k) => (state.approved[k] ? `Утверждён ${state.approved[k].at}, не отправлен поставщику` : "Черновик, не отправлен"),
+      approval: (k) => (state.approved[k] ? `Отмечен как согласованный на этом устройстве ${state.approved[k].at}, не отправлен поставщику` : "Черновик, не отправлен"),
     };
     keys.forEach((k) => {
       const lines = rows.filter((x) => x.s.sup === k && x.final > 0).sort(Engine.actionCompare);
@@ -450,7 +467,7 @@
   // ---------------- drawer ----------------
   let openId = null;
   function openDrawer(id, keepScroll = false) {
-    const row = rows.find((x) => x.s.id === id);
+    const row = id === SB_ID ? sandboxRow() : rows.find((x) => x.s.id === id);
     if (!row) return;
     openId = id;
     const { s, r } = row;
@@ -473,7 +490,7 @@
         <div>
           <div style="margin-bottom:6px;display:flex;gap:6px;flex-wrap:wrap">${statusPill(r.status)}${pill(r.urgency)}<span class="scen-tag">Сценарий: ${SCN[p.scenario].label}</span></div>
           <h2>${esc(s.n)}</h2>
-          <div class="p-meta"><span>Код 1С ${esc(s.id)}</span>${s.art ? `<span>Арт. ${esc(s.art)}</span>` : ""}<span>${esc(SUPS[s.sup].name)}</span><span>${esc(s.g)}</span><span>ABC: ${s.abc}${s.pc ? ` · кат. партнёра ${esc(s.pc)}` : ""}</span></div>
+          <div class="p-meta">${s.id === SB_ID ? "<span>Данные введены вручную на вкладке «Проверить расчёт»</span>" : `<span>Код 1С ${esc(s.id)}</span>`}${s.art ? `<span>Арт. ${esc(s.art)}</span>` : ""}<span>${esc(supName(s.sup))}</span><span>${esc(s.g)}</span><span>ABC: ${s.abc}${s.pc ? ` · кат. партнёра ${esc(s.pc)}` : ""}</span></div>
         </div>
         <button class="d-close" aria-label="Закрыть"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
       </div>
@@ -482,7 +499,7 @@
           ${fact("Закончится", fDay(r.stockoutDay), r.stockoutDay == null ? (r.status === "nodata" ? "мало истории" : "не раньше чем через 6 мес") : inDays(r.stockoutDay), r.status === "now" || r.expectedDeficit ? "crit" : "")}
           ${fact("Последний безопасный день", r.safeDay == null ? NA : r.status === "now" ? "Немедленно" : r.safeDay < 0 ? "Просрочено" : Engine.fmtDay(r.safeDay), r.safeDay == null ? (r.status === "nodata" ? "мало истории" : "заказ пока не нужен") : r.status === "now" ? "товара уже нет" : r.safeDay < 0 ? `на ${fmt(-r.safeDay)} дн` : inDays(r.safeDay), r.safeDay != null && r.safeDay < 0 ? "crit" : "")}
           ${fact("Приход, если заказать сегодня", Engine.fmtDay(r.arrivalDay), `${p.buffer} дн согласования + ${r.leadDays} дн поставки`)}
-          ${fact("Дефицит до прихода", r.status === "nodata" ? NA : `${fmt(r.deficitLead)} шт`, r.deficitLead >= 1 ? "продажи, которые не состоятся" : "дефицита нет", r.deficitLead >= 1 ? "crit" : "")}
+          ${fact("Дефицит до прихода", r.status === "nodata" ? NA : `${fmt(r.deficitLead)} шт`, r.deficitLead >= 1 ? "расчётный неудовлетворённый спрос, если не будет срочной поставки" : "дефицита нет", r.deficitLead >= 1 ? "crit" : "")}
           ${fact("Дней запаса", r.stockoutDay == null ? (r.status === "nodata" ? NA : "> 180") : fmt(r.stockoutDay), "с учётом товара в пути по датам")}
           ${fact("Рекомендуемый заказ", `${fmt(row.final)} шт`, `${state.overrides[s.id] != null ? `расчёт ${fmt(r.qty)} · изменено вручную` : `потребность ${fmt(Math.max(r.need, 0))} → кратно ${fmt(r.moq)}`}${priced ? ` · ${money(row.final * s.pr)}` : " · цена: нет данных"}`, "main")}
           ${fact("Текущий остаток", `${fmt(r.stock)} шт`, s.wh ? Object.entries(s.wh).map(([k, v]) => `${esc(k)}: ${fmt(v)}`).join(" · ") : `на ${META.asOf.split("-").reverse().join(".")}`)}
@@ -508,7 +525,7 @@
         </div>
 
         ${s.oo.length ? `<div class="d-sec"><h4>Исключённые разовые заказы</h4><div class="list">
-          ${s.oo.map((o) => `<div class="list-row"><span>Накладная ${esc(o[1])} от ${esc(o[2])}</span><span><b class="num">${fmt(o[3])} шт</b> <span class="muted">· обычно ${fmt(o[4])} шт</span></span></div>`).join("")}
+          ${s.oo.map((o) => `<div class="list-row"><span>${o[1] ? `Накладная ${esc(o[1])} от ` : "Накладная от "}${esc(o[2])}</span><span><b class="num">${fmt(o[3])} шт</b> <span class="muted">· обычно ${fmt(o[4])} шт</span></span></div>`).join("")}
         </div></div>` : ""}
 
         ${s.cap ? `<div class="d-sec"><h4>Сглаженные всплески продаж</h4><div class="list">
@@ -516,7 +533,7 @@
         </div></div>` : ""}
 
         ${s.av ? `<div class="d-sec"><h4>Периоды отсутствия товара</h4><div class="list">
-          ${s.av.map((a, i) => (a < 1 ? `<div class="list-row"><span>${META.months[i]}</span><span>${a <= 0.1 ? "не было весь месяц" : a < 0.6 ? "большую часть месяца" : "часть месяца"} · продано ${fmt(s.raw[i])}, спрос оценён <b class="num">${fmt(s.rst[i])}</b></span></div>` : "")).join("")}
+          ${s.av.map((a, i) => (a < 1 ? `<div class="list-row"><span>${META.months[i]}</span><span>${a <= 0.1 ? "не было весь месяц" : a < 0.6 ? "большую часть месяца" : "часть месяца"} · продано ${fmt(s.raw[i])} · после очистки ${fmt(s.cln[i])} → восстановлено <b class="num">${fmt(s.rst[i])}</b></span></div>` : "")).join("")}
         </div></div>` : ""}
 
       </div>`;
@@ -615,6 +632,9 @@
     });
     // regular line
     const pts = reg.map((v, i) => [x(i), y(v)]);
+    // очищенный ряд показываем отдельно там, где восстановление его подняло
+    const showClean = p.oneoff && p.restore && s.av && s.cln.some((v, i) => s.rst[i] - v > 0.5);
+    if (showClean) svg += `<path d="${line(s.cln.map((v, i) => [x(i), y(v)]))}" fill="none" stroke="var(--text-3)" stroke-width="1.5" stroke-dasharray="3 3"/>`;
     svg += `<path d="${line(pts)}" fill="none" stroke="var(--series-1)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
     const fpts = [[x(n - 1), y(reg[n - 1])], ...fcMonths.map((f, j) => [x(n + j), y(f.q)])];
     svg += `<path d="${line(fpts)}" fill="none" stroke="var(--series-1)" stroke-width="2" stroke-dasharray="5 4" stroke-linecap="round"/>`;
@@ -627,15 +647,16 @@
     // hover targets
     labels.forEach((l, i) => {
       const tip = i < n
-        ? `<b>${l}</b><br>Продано: ${fmt(s.raw[i])}<br>Регулярный спрос: ${fmt(reg[i])}${oo[i] ? `<br><span style="color:#f59a70">● Разовый заказ ${fmt(oo[i])} шт — исключён</span>` : ""}${s.av && s.av[i] < 1 ? `<br><span style="color:#f08a8a">Товара не было — спрос восстановлен</span>` : ""}`
+        ? `<b>${l}</b><br>Фактические продажи: ${fmt(s.raw[i])}<br>После очистки: ${fmt(s.cln[i])}${p.restore && s.rst[i] - s.cln[i] > 0.5 ? `<br>Восстановленный спрос: ${fmt(s.rst[i])} (+${fmt(s.rst[i] - s.cln[i])})` : ""}${oo[i] ? `<br><span style="color:#f59a70">● Разовый заказ ${fmt(oo[i])} шт — исключён</span>` : ""}${s.av && s.av[i] < 1 ? `<br><span style="color:#f08a8a">Товара не было — спрос восстановлен</span>` : ""}`
         : `<b>${l} · прогноз</b><br>${fmt(fcMonths[i - n].q)} шт`;
       svg += `<rect class="hit" x="${x(i) - iw / N / 2}" y="${pt}" width="${iw / N}" height="${ih}" fill="transparent" data-tip="${esc(tip)}"/>`;
     });
     svg += `</svg>`;
     return `<div class="chart">${svg}</div>
       <div class="legend">
-        <span><i style="width:10px;height:10px;background:var(--bar);border-radius:2px"></i>Продажи (факт)</span>
-        <span><i style="width:16px;height:2px;background:var(--series-1)"></i>Регулярный спрос</span>
+        <span><i style="width:10px;height:10px;background:var(--bar);border-radius:2px"></i>Фактические продажи</span>
+        <span><i style="width:16px;height:2px;background:var(--series-1)"></i>${p.restore && s.av ? "Регулярный спрос (с восстановлением)" : "Регулярный спрос (после очистки)"}</span>
+        ${p.oneoff && p.restore && s.av && s.cln.some((v, i) => s.rst[i] - v > 0.5) ? `<span><i style="width:16px;height:0;border-top:2px dashed var(--text-3)"></i>После очистки, до восстановления</span>` : ""}
         <span><i style="width:16px;height:0;border-top:2px dashed var(--series-1)"></i>Прогноз</span>
         ${s.oo.length ? `<span><i style="width:9px;height:9px;border-radius:50%;background:var(--series-2)"></i>Разовый заказ (исключён)</span>` : ""}
         ${s.av ? `<span><i style="width:12px;height:12px;background:url(#hatch);background:repeating-linear-gradient(45deg,color-mix(in srgb,var(--crit) 35%,transparent) 0 1.5px,transparent 1.5px 4px)"></i>Нет товара на складе</span>` : ""}
@@ -710,7 +731,7 @@
         <span><i style="width:16px;height:0;border-top:2px dashed var(--text-3)"></i>Остаток без нового заказа</span>
         ${orderQty > 0 ? `<span><i style="width:16px;height:2px;background:var(--series-1)"></i>С рекомендованным заказом</span>` : ""}
         <span><i style="width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:8px solid var(--series-1)"></i>Приход товара в пути</span>
-        ${zones.length ? `<span><i style="width:12px;height:12px;background:repeating-linear-gradient(45deg,color-mix(in srgb,var(--crit) 45%,transparent) 0 1.5px,transparent 1.5px 4px)"></i>Дефицит — продажи теряются</span>` : ""}
+        ${zones.length ? `<span><i style="width:12px;height:12px;background:repeating-linear-gradient(45deg,color-mix(in srgb,var(--crit) 45%,transparent) 0 1.5px,transparent 1.5px 4px)"></i>Дефицит — спрос не будет удовлетворён</span>` : ""}
       </div>${after ? `<p class="say" style="margin-top:8px">${after}</p>` : ""}${noEta}
       <p class="muted" style="font-size:12px;margin:6px 0 0">Прогноз спроса по месяцам — на графике «История спроса и прогноз» ниже; здесь он распределён по дням месяца.</p>`;
     stockCache = { pr, x0: pl, iw, N, W, orderQty };
@@ -810,11 +831,11 @@
     base.forEach(({ s }) => s.oo.forEach((o) => oos.push({ s, o })));
     oos.sort((a, b) => b.o[3] / Math.max(b.o[4], 1) - a.o[3] / Math.max(a.o[4], 1));
     const seenOo = new Set();
-    const ooList = oos.filter(({ s }) => !seenOo.has(s.id) && seenOo.add(s.id)).slice(0, 10).map(({ s, o }) => `<div class="list-row" data-open="${esc(s.id)}" style="cursor:pointer"><span>${esc(s.n)}<br><span class="muted">накл. ${esc(o[1])} · ${esc(o[2])}</span></span><span style="text-align:right;white-space:nowrap"><b class="num">${fmt(o[3])} шт</b><br><span class="muted">в ${fmt(o[3] / Math.max(o[4], 1))} раз больше обычного</span></span></div>`).join("");
+    const ooList = oos.filter(({ s }) => !seenOo.has(s.id) && seenOo.add(s.id)).slice(0, 10).map(({ s, o }) => `<div class="list-row" data-open="${esc(s.id)}" style="cursor:pointer"><span>${esc(s.n)}<br><span class="muted">накладная от ${esc(o[2])}</span></span><span style="text-align:right;white-space:nowrap"><b class="num">${fmt(o[3])} шт</b><br><span class="muted">в ${fmt(o[3] / Math.max(o[4], 1))} раз больше обычного</span></span></div>`).join("");
 
     // 5. упущенный спрос
     const lost = base.filter((x) => x.r.lost > 0.5).sort((a, b) => (b.s.pr ? b.r.lost * b.s.pr : b.r.lost) - (a.s.pr ? a.r.lost * a.s.pr : a.r.lost)).slice(0, 10);
-    const lostList = lost.map(({ s, r }) => `<div class="list-row" data-open="${esc(s.id)}" style="cursor:pointer"><span>${esc(s.n)}<br><span class="muted">${esc(SUPS[s.sup].name)} · ${s.av.filter((a) => a < 1).length} мес. без товара</span></span><span style="text-align:right;white-space:nowrap"><b class="num">+${fmt(r.lost)} шт</b>${s.pr ? `<br><span class="muted">≈ ${money(r.lost * s.pr)}</span>` : ""}</span></div>`).join("");
+    const lostList = lost.map(({ s, r }) => `<div class="list-row" data-open="${esc(s.id)}" style="cursor:pointer"><span>${esc(s.n)}<br><span class="muted">${esc(SUPS[s.sup].name)} · ${s.av.filter((a) => a < 1).length} мес. без товара</span></span><span style="text-align:right;white-space:nowrap"><b class="num">+${fmt(r.lost)} шт</b>${s.pr ? `<br><span class="muted">себест. ≈ ${money(r.lost * s.pr)}</span>` : ""}</span></div>`).join("");
 
     const excess = base.filter((x) => x.r.excess > 0);
     const excessVal = excess.reduce((a, x) => a + (Engine.hasPrice(x.s) ? x.r.excess * x.s.pr : 0), 0);
@@ -904,7 +925,7 @@
           <div class="cal-top"><div><div class="cal-title">${w.label}</div><div class="cal-sub">${w.k === "now" ? "заказ нужно разместить сегодня" : w.sub + (w.k !== "later" ? ` · до ${dayDate(w.k === "w1" ? 7 : w.k === "w2" ? 14 : w.k === "m1" ? 30 : 60)}` : "")}</div></div>
             <div class="cal-count num">${fmt(list.length)}</div></div>
           <div class="cal-stats">${bySup}${val ? `<span>Сумма: <b class="num">${money(val)}</b></span>` : ""}${crit ? `<span style="color:var(--crit)">Дефицит неизбежен: <b class="num">${fmt(crit)}</b></span>` : ""}</div>
-          ${def && w.k !== "later" ? `<div class="cal-risk">Если не заказать — за 6 мес. не хватит товара на ≈ <b>${money(def)}</b> (SE, по себестоимости)</div>` : ""}
+          ${def && w.k !== "later" ? `<div class="cal-risk">Расчётный неудовлетворённый спрос без заказа за 6 мес. — по себестоимости ≈ <b>${money(def)}</b> (только позиции SE с ценой; это не выручка и не прибыль)</div>` : ""}
           <div class="cal-list">${list.slice(0, 5).map((x) => `<div class="cal-item" data-open="${esc(x.s.id)}"><span class="ci-name">${esc(x.s.n)}</span><span class="ci-date num">${x.r.orderByDay <= 0 ? (x.r.orderByDay < 0 ? `опоздание ${fmt(-x.r.orderByDay)} дн` : "сегодня") : dayDate(x.r.orderByDay)}</span></div>`).join("")}</div>
           ${list.length ? `<button class="btn sm" data-win="${w.k}">Открыть список (${fmt(list.length)})</button>` : '<div class="muted" style="font-size:13px">Нет позиций</div>'}
         </div>` };
@@ -954,7 +975,7 @@
       val[k] = {
         order: rs.filter((x) => x.final > 0).length,
         crit: rs.filter((x) => x.r.urgency === "critical").length,
-        today: rs.filter((x) => x.r.safeDay != null && x.r.safeDay <= 0).length,
+        today: rs.filter(Engine.isOrderToday).length,
         deficit: rs.filter((x) => x.r.expectedDeficit).length,
         units: rs.reduce((a, x) => a + x.final, 0),
         value: cov.value, share: cov.share, priced: cov.priced, lines: cov.lines,
@@ -1037,6 +1058,7 @@
       ${item(pct(q.moqShare), "Артикулы с кратностью (MOQ)", "Где кратности нет в файле, принята 1 — заказ может не совпасть с упаковкой поставщика.")}
       ${item(pct(q.etaShare), "Товар в пути с датой прихода", q.transitNoEta ? `${fmt(q.transitNoEta)} шт в пути без даты (файл SE) не считаются прибывшими: заказ по таким позициям может оказаться больше нужного. Нужны даты поступления.` : "У всего товара в пути есть дата прихода.")}
       ${item(fmt(q.returns), "Артикулы с возвратами", "Отрицательные строки накладных в спрос не входят.")}
+      ${item("Нет", "Поле клиента в выгрузке", "В файлах продаж партнёра нет идентификатора клиента (только дата, номер документа, товар, склад, количество). Проверка «крупные продажи одному клиенту» невозможна — разовые заказы ищутся по накладной. Для проверки по клиенту нужен обезличенный ID клиента в выгрузке.")}
       ${item(fmt(q.noHistory), "Без достаточной истории", `Меньше ${META.minHistory} мес. продаж или нулевой спрос — статус «Недостаточно данных», даты не рассчитываются.`)}
       ${item(fmt(q.zeroStock), "С нулевым остатком", "При положительном спросе — статус «Дефицит сейчас».")}
       ${item(fmt(q.badCodes.length), "Нестандартные коды 1С", q.badCodes.length ? `Например: ${q.badCodes.slice(0, 4).map(esc).join(", ")}. Проверьте сопоставление с 1С перед загрузкой.` : "Все коды в едином формате.")}
@@ -1066,6 +1088,214 @@
         <p class="muted" style="font-size:12px;margin:10px 0 0">WAPE = Σ|прогноз − факт| / Σ факт. Bias = Σ(прогноз − факт) / Σ факт: плюс — завышение, минус — занижение. Для редких товаров (C) ошибка выше — это ожидаемо при штучных продажах. Проверка измеряет точность прогноза спроса и <b>не доказывает предотвращённые дефициты</b>: для этого нужна точная история ежедневных остатков и поступлений.</p>
       </div>`;
   }
+
+  // ---------------- проверить расчёт на своих числах ----------------
+  // Тот же алгоритм, что и для реальных товаров: Engine.analyzeSeries (шаги 1–5, копия Python)
+  // + Engine.calc (заказ, календарь остатка). Данные хранятся только в этом браузере.
+  const NM = META.months.length;
+  const avgLast = (a, k = 6) => { const t = a.slice(-k); return t.reduce((x, y) => x + y, 0) / t.length; };
+  const blankSb = () => ({
+    sales: new Array(NM).fill(100), av: new Array(NM).fill(1), oneoffs: [], stock: 150,
+    transit: [], leadDays: Math.round(state.p.lead.IEK * 30), moq: 1, abc: "B", prof: "IEK", price: "", typical: 10,
+    source: "Стабильный спрос ≈ 100 шт/мес", realId: null,
+  });
+  state.sb = store.get("sandbox", null) || blankSb();
+  let sbPrev = null, sbNote = "";
+
+  /** Разовый ли заказ: правило как у детектора по накладным (упрощённо для ручного ввода):
+   *  ≥ 5 обычных накладных и ≥ 25 % продаж месяца; если такие заказы в 4+ месяцах — это регулярный оптовик. */
+  function sbVerdicts(sb) {
+    const monthsWithBig = new Set();
+    const v = sb.oneoffs.map((o) => {
+      if (o.fixed) return { ...o, one: true, why: "найден по накладным партнёра" };
+      const monthTotal = (+sb.sales[o.m] || 0) + sb.oneoffs.filter((q) => q.m === o.m).reduce((a, q) => a + (+q.qty || 0), 0);
+      const big = +o.qty >= 5 * Math.max(1, +sb.typical || 1) && +o.qty >= 0.25 * monthTotal;
+      if (big) monthsWithBig.add(o.m);
+      return { ...o, one: big, why: big ? `в ${fmt(+o.qty / Math.max(1, +sb.typical || 1))} раз больше обычной накладной и ${fmt(100 * o.qty / Math.max(monthTotal, 1))}% продаж месяца` : "меньше 5 обычных накладных или < 25% месяца — это обычный спрос" };
+    });
+    const recurring = monthsWithBig.size >= 4;
+    return v.map((o) => (recurring && !o.fixed && o.one ? { ...o, one: false, why: "крупные заказы в 4+ месяцах — постоянный оптовик, спрос регулярный" } : o));
+  }
+
+  function sandboxRow() {
+    const sb = state.sb;
+    const verd = sbVerdicts(sb);
+    const raw = sb.sales.map((v, i) => Math.max(0, +v || 0) + verd.filter((o) => o.m === i).reduce((a, o) => a + (+o.qty || 0), 0));
+    const oneoff = new Array(NM).fill(0);
+    verd.forEach((o) => { if (o.one) oneoff[o.m] += +o.qty || 0; });
+    const avail = sb.av.map((a, i) => (a < 1 && !(a > 0.1 && a < 1 && sb.realId) ? (raw[i] <= 0 ? 0.1 : 0.4) : a));
+    const a = Engine.analyzeSeries({ raw, avail, oneoff, supplierS: SUPS[sb.prof].S });
+    state.p.lead[SB_ID] = Math.max(1, +sb.leadDays || 1) / 30;
+    const tr = sb.transit.filter((t) => +t.qty > 0).map((t, i) => [`Поставка ${i + 1}`, +t.qty,
+      t.days === "" || t.days == null ? null : Engine.dateOf(Math.max(0, +t.days)).toISOString().slice(0, 10)]);
+    const s = {
+      id: SB_ID, n: "Проверочный товар (ручной ввод)", g: sb.source || "Ручная проверка", abc: sb.abc, sup: SB_ID,
+      pr: +sb.price > 0 ? +sb.price : null, mq: 1, st: Math.max(0, +sb.stock || 0), tr, moq: Math.max(1, Math.round(+sb.moq || 1)),
+      oo: verd.filter((o) => o.one).map((o) => [o.m, o.fixed ? o.doc : "ручной ввод", o.fixed ? o.date : "", +o.qty, +sb.typical || 1]), ...a,
+    };
+    const r = Engine.calc(s, state.p);
+    return { s, r, final: r.qty, value: Engine.hasPrice(s) ? r.qty * s.pr : 0, verd };
+  }
+  const saveSb = () => store.set("sandbox", state.sb);
+
+  function sbLoadReal(id) {
+    const x = rows.find((q) => q.s.id === id.trim() || (q.s.art && q.s.art === id.trim()));
+    if (!x) { toast("Товар не найден: проверьте код 1С или артикул"); return false; }
+    const s = x.s;
+    const oo = s.oo.map((o) => ({ m: o[0], qty: o[3], fixed: true, doc: o[1], date: o[2] }));
+    state.sb = {
+      sales: s.raw.map((v, i) => Math.max(0, v - oo.filter((o) => o.m === i).reduce((a, o) => a + o.qty, 0))),
+      av: (s.av || new Array(NM).fill(1)).slice(), oneoffs: oo, stock: s.st,
+      transit: s.tr.map((t) => ({ qty: t[1], days: t[2] ? Math.max(0, Engine.dayOf(t[2])) : "" })),
+      leadDays: Math.round(state.p.lead[s.sup] * 30), moq: s.moq, abc: s.abc, prof: s.sup, price: s.pr ?? "",
+      typical: Math.max(1, Math.round((s.oo[0] && s.oo[0][4]) || 10)), source: `Копия: ${s.n}`, realId: s.id,
+    };
+    return true;
+  }
+  const TEMPLATES = {
+    flat: ["Стабильный спрос ≈ 100 шт/мес", () => new Array(NM).fill(100)],
+    season: ["Сезонный товар: пик летом", () => META.monthNums.map((m) => Math.round(100 * [0.5, 0.5, 0.7, 1, 1.2, 1.5, 1.7, 1.6, 1.2, 0.9, 0.7, 0.5][m - 1]))],
+    growth: ["Растущий спрос: +40% за год", () => META.monthNums.map((_, i) => Math.round(80 * Math.pow(1.4, i / 12)))],
+    fresh: ["Новый товар: продажи 6 месяцев", () => META.monthNums.map((_, i) => (i < NM - 6 ? 0 : 120))],
+  };
+
+  function sbQuick(kind) {
+    const sb = state.sb;
+    const before = sandboxRow();
+    const avg = Math.max(1, Math.round(avgLast(sb.sales.map((v) => +v || 0))));
+    if (kind === "oneoff") {
+      const qty = avg * 30;
+      sb.typical = Math.max(1, Math.round(avg / 10));
+      sb.oneoffs.push({ m: NM - 3, qty });
+      sbNote = `Добавлен разовый заказ ${fmt(qty)} шт в ${META.months[NM - 3]} (в 30 раз больше месячного спроса).`;
+    } else if (kind === "stockout") {
+      [NM - 5, NM - 4, NM - 3].forEach((i) => { sb.sales[i] = 0; sb.av[i] = 0.1; });
+      sbNote = `Отмечены 3 месяца без товара (${META.months[NM - 5]} — ${META.months[NM - 3]}), продажи в них = 0.`;
+    } else if (kind === "season") {
+      sb.sales = TEMPLATES.season[1]();
+      sbNote = "Продажи заменены на сезонный профиль с пиком в июле–августе.";
+    } else if (kind === "transit") {
+      sb.transit.push({ qty: Math.round(avg * 1.5), days: 10 });
+      sbNote = `Добавлен товар в пути ${fmt(Math.round(avg * 1.5))} шт с приходом через 10 дней.`;
+    } else if (kind === "transitNoEta") {
+      sb.transit.push({ qty: Math.round(avg * 1.5), days: "" });
+      sbNote = `Добавлен товар в пути ${fmt(Math.round(avg * 1.5))} шт без даты прихода.`;
+    }
+    sbPrev = before;
+    saveSb();
+    renderSandbox();
+  }
+
+  function renderSandbox() {
+    const sb = state.sb;
+    const row = sandboxRow();
+    const { s, r } = row;
+    const real = sb.realId && rows.find((x) => x.s.id === sb.realId);
+    const match = real ? (real.r.qty === r.qty && real.r.stockoutDay === r.stockoutDay
+      ? `<div class="sb-match">✓ Совпадает с основным расчётом этого товара: ${fmt(real.r.qty)} шт, закончится ${Engine.fmtDay(real.r.stockoutDay)}.</div>`
+      : `<div class="sb-match warn">Отличается от основного расчёта (${fmt(real.r.qty)} шт): вы изменили данные или у товара был остаток до первых продаж.</div>`) : "";
+    let delta = "";
+    if (sbPrev) {
+      const d = r.qty - sbPrev.r.qty;
+      const lv = r.level - sbPrev.r.level;
+      delta = `<div class="sb-delta">${esc(sbNote)}<br>Заказ: <b>${fmt(sbPrev.r.qty)} → ${fmt(r.qty)} шт</b> (${d >= 0 ? "+" : "−"}${fmt(Math.abs(d))}) · регулярный спрос ${fmt(sbPrev.r.level, 1)} → ${fmt(r.level, 1)} шт/мес (${lv >= 0 ? "+" : "−"}${fmt(Math.abs(lv), 1)})
+        · закончится ${Engine.fmtDay(sbPrev.r.stockoutDay)} → ${Engine.fmtDay(r.stockoutDay)}</div>`;
+    }
+    const monthCells = META.months.map((m, i) => `<div class="sb-m ${sb.av[i] < 1 ? "off" : ""}">
+        <div class="ml"><span>${m}</span><label title="Товара не было на складе"><input type="checkbox" data-av="${i}" ${sb.av[i] < 1 ? "checked" : ""}>нет</label></div>
+        <input type="number" min="0" step="1" data-sale="${i}" value="${sb.sales[i]}" aria-label="Продажи ${m}, шт"></div>`).join("");
+    const verd = row.verd;
+    $("#tab-sandbox").innerHTML = `<div class="sb-grid">
+      <div class="card">
+        <h3>Проверить расчёт на своих числах</h3>
+        <p class="c-desc">Введите продажи, остаток и поставки — сервис посчитает заказ тем же алгоритмом, что и для 2 944 реальных товаров, и покажет каждый шаг. Данные сохраняются только в этом браузере и никуда не отправляются.</p>
+        <div class="sb-inline" style="margin-bottom:14px">
+          <select id="sbTpl" aria-label="Шаблон"><option value="">Шаблон…</option>${Object.entries(TEMPLATES).map(([k, [l]]) => `<option value="${k}">${l}</option>`).join("")}</select>
+          <span class="muted">или</span>
+          <input id="sbReal" placeholder="код 1С или артикул" aria-label="Код 1С или артикул реального товара" style="width:170px">
+          <button class="btn sm" id="sbLoad">Взять реальный товар</button>
+          <button class="btn sm ghost" id="sbReset">Сбросить</button>
+        </div>
+        <div class="muted" style="font-size:12.5px;margin-bottom:10px">Сейчас: <b>${esc(sb.source)}</b></div>
+
+        <h4 style="margin:0 0 8px">Продажи по месяцам, шт <small class="muted">(«нет» — товара не было на складе)</small></h4>
+        <div class="sb-months">${monthCells}</div>
+        <div class="sb-inline" style="margin:8px 0 16px"><span>Заполнить все месяцы:</span><input type="number" id="sbFill" min="0" value="100" aria-label="Одинаковые продажи во всех месяцах"><button class="btn sm" id="sbFillBtn">Заполнить</button></div>
+
+        <h4 style="margin:0 0 8px">Товар сейчас</h4>
+        <div class="sb-fields">
+          <label>Остаток на складе, шт<input type="number" min="0" data-f="stock" value="${sb.stock}"></label>
+          <label>Срок поставки, дней<input type="number" min="1" max="365" data-f="leadDays" value="${sb.leadDays}"></label>
+          <label>Кратность (MOQ), шт<input type="number" min="1" data-f="moq" value="${sb.moq}"></label>
+          <label>Категория ABC<select data-f="abc">${["A", "B", "C"].map((k) => `<option ${sb.abc === k ? "selected" : ""}>${k}</option>`).join("")}</select></label>
+          <label>Сезонность поставщика<select data-f="prof">${Object.entries(REAL_SUPS).map(([k, v]) => `<option value="${k}" ${sb.prof === k ? "selected" : ""}>${esc(v.name)}</option>`).join("")}</select></label>
+          <label>Цена, ₸ (необязательно)<input type="number" min="0" data-f="price" value="${sb.price}" placeholder="нет данных"></label>
+        </div>
+
+        <h4 style="margin:16px 0 8px">Товар в пути</h4>
+        ${sb.transit.map((t, i) => `<div class="sb-inline" style="margin-bottom:6px"><input type="number" min="0" data-tq="${i}" value="${t.qty}" aria-label="Количество в пути"> шт, придёт через <input type="number" min="0" data-td="${i}" value="${t.days}" placeholder="нет даты" aria-label="Через сколько дней придёт"> дн <button class="btn sm ghost" data-trdel="${i}" aria-label="Удалить поставку">✕</button></div>`).join("") || '<div class="muted" style="font-size:13px;margin-bottom:6px">Нет</div>'}
+        <button class="btn sm" id="sbTrAdd">+ Добавить поставку</button>
+        <div class="muted" style="font-size:12px;margin-top:4px">Пустое поле «придёт через» = дата неизвестна: такой товар не считается прибывшим вовремя.</div>
+
+        <h4 style="margin:16px 0 8px">Разовые крупные заказы</h4>
+        ${verd.map((o, i) => `<div class="list-row" style="border:1px solid var(--line);border-radius:8px;margin-bottom:6px"><span>${META.months[o.m]} · <b>${fmt(o.qty)} шт</b><br><span class="muted" style="font-size:12px">${o.one ? "исключён из регулярного спроса" : "оставлен в спросе"}: ${esc(o.why)}</span></span>${o.fixed ? "" : `<button class="btn sm ghost" data-oodel="${i}" aria-label="Удалить заказ">✕</button>`}</div>`).join("")}
+        <div class="sb-inline"><select id="sbOoM" aria-label="Месяц">${META.months.map((m, i) => `<option value="${i}" ${i === NM - 3 ? "selected" : ""}>${m}</option>`).join("")}</select>
+          <input type="number" id="sbOoQ" min="1" placeholder="шт" aria-label="Количество разового заказа">
+          <span>обычная накладная</span><input type="number" min="1" data-f="typical" value="${sb.typical}" style="width:80px" aria-label="Обычный размер накладной, шт"> шт
+          <button class="btn sm" id="sbOoAdd">Добавить заказ</button></div>
+
+        <h4 style="margin:16px 0 8px">Проверить требования ТЗ одной кнопкой</h4>
+        <div class="sb-quick">
+          <button class="btn sm" data-q="oneoff">+ Разовый заказ ×30</button>
+          <button class="btn sm" data-q="stockout">3 месяца без товара</button>
+          <button class="btn sm" data-q="season">Сделать сезонным</button>
+          <button class="btn sm" data-q="transit">Товар в пути с датой</button>
+          <button class="btn sm" data-q="transitNoEta">Товар в пути без даты</button>
+        </div>
+      </div>
+
+      <div class="card sb-result">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">${statusPill(r.status)}${pill(r.urgency)}<span class="scen-tag">Сценарий: ${SCN[state.p.scenario].label}</span></div>
+        ${delta}
+        <div class="facts" style="margin:12px 0">
+          <div class="fact main"><div class="f-l">Рекомендуемый заказ</div><div class="f-v">${fmt(r.qty)} шт</div><div class="f-s">кратно ${fmt(r.moq)}${s.pr ? ` · ${money(r.qty * s.pr)}` : ""}</div></div>
+          <div class="fact ${r.expectedDeficit ? "crit" : ""}"><div class="f-l">Закончится</div><div class="f-v">${fDay(r.stockoutDay)}</div><div class="f-s">${r.stockoutDay == null ? (r.status === "nodata" ? "мало истории" : "> 6 мес") : inDays(r.stockoutDay)}</div></div>
+          <div class="fact ${r.safeDay != null && r.safeDay < 0 ? "crit" : ""}"><div class="f-l">Заказать до</div><div class="f-v">${r.safeDay == null ? NA : r.status === "now" ? "Немедленно" : r.safeDay < 0 ? "Просрочено" : Engine.fmtDay(r.safeDay)}</div><div class="f-s">поставка ${fmt(r.leadDays)} + ${state.p.buffer} дн</div></div>
+          <div class="fact"><div class="f-l">Регулярный спрос</div><div class="f-v">${fmt(r.level, r.level < 10 ? 1 : 0)}</div><div class="f-s">шт/мес без сезонности</div></div>
+        </div>
+        ${match}
+        <p class="say" style="margin-top:10px">${esc(Engine.explain(s, r, state.p))}</p>
+        ${factorTable(s, r, row)}
+        <div style="margin-top:14px">${stockChart(s, r, r.qty)}</div>
+        <button class="btn primary" id="sbOpen" style="margin-top:12px">Открыть подробный расчёт</button>
+      </div>
+    </div>`;
+    bindStock($("#tab-sandbox"));
+    const T = $("#tab-sandbox");
+    const upd = (fn) => { fn(); sbPrev = null; saveSb(); clearTimeout(sbTimer); sbTimer = setTimeout(renderSandbox, 250); };
+    $$("[data-sale]", T).forEach((el) => el.oninput = () => upd(() => { state.sb.sales[+el.dataset.sale] = Math.max(0, +el.value || 0); }));
+    $$("[data-av]", T).forEach((el) => el.onchange = () => { state.sb.av[+el.dataset.av] = el.checked ? 0.1 : 1; sbPrev = null; saveSb(); renderSandbox(); });
+    $$("[data-f]", T).forEach((el) => (el.oninput = el.onchange = () => upd(() => { state.sb[el.dataset.f] = el.tagName === "SELECT" ? el.value : el.value === "" ? "" : +el.value; })));
+    $$("[data-tq]", T).forEach((el) => el.oninput = () => upd(() => { state.sb.transit[+el.dataset.tq].qty = +el.value || 0; }));
+    $$("[data-td]", T).forEach((el) => el.oninput = () => upd(() => { state.sb.transit[+el.dataset.td].days = el.value === "" ? "" : Math.max(0, +el.value); }));
+    $$("[data-trdel]", T).forEach((el) => el.onclick = () => { state.sb.transit.splice(+el.dataset.trdel, 1); saveSb(); renderSandbox(); });
+    $$("[data-oodel]", T).forEach((el) => el.onclick = () => { state.sb.oneoffs.splice(+el.dataset.oodel, 1); saveSb(); renderSandbox(); });
+    $("#sbTrAdd").onclick = () => { state.sb.transit.push({ qty: 100, days: 14 }); saveSb(); renderSandbox(); };
+    $("#sbOoAdd").onclick = () => {
+      const q = +$("#sbOoQ").value;
+      if (!(q > 0)) { toast("Укажите количество разового заказа"); return; }
+      sbPrev = sandboxRow(); sbNote = `Добавлен заказ ${fmt(q)} шт в ${META.months[+$("#sbOoM").value]}.`;
+      state.sb.oneoffs.push({ m: +$("#sbOoM").value, qty: q }); saveSb(); renderSandbox();
+    };
+    $("#sbFillBtn").onclick = () => { const v = Math.max(0, +$("#sbFill").value || 0); state.sb.sales = new Array(NM).fill(v); state.sb.source = `Одинаковые продажи ${fmt(v)} шт/мес`; state.sb.realId = null; sbPrev = null; saveSb(); renderSandbox(); };
+    $("#sbTpl").onchange = (e) => { const t = TEMPLATES[e.target.value]; if (!t) return; state.sb = { ...blankSb(), sales: t[1](), source: t[0] }; sbPrev = null; saveSb(); renderSandbox(); };
+    $("#sbLoad").onclick = () => { if (sbLoadReal($("#sbReal").value)) { sbPrev = null; saveSb(); renderSandbox(); } };
+    $("#sbReal").onkeydown = (e) => { if (e.key === "Enter") $("#sbLoad").click(); };
+    $("#sbReset").onclick = () => { state.sb = blankSb(); sbPrev = null; saveSb(); renderSandbox(); };
+    $$("[data-q]", T).forEach((el) => el.onclick = () => sbQuick(el.dataset.q));
+    $("#sbOpen").onclick = () => openDrawer(SB_ID);
+  }
+  let sbTimer;
 
   // ---------------- method tab ----------------
   function pickExamples() {
@@ -1108,6 +1338,8 @@
           ${x ? `<button class="btn sm" data-open="${esc(x.s.id)}">Открыть пример</button>` : `<button class="btn sm" data-goto="orders">К заказу</button>`}
         </div>`).join("")}</div>
       ${backtestHtml()}
+      ${window.renderCoverage ? '<h2 class="sec">Охват данных</h2><div id="coverageBox"></div>' : ""}
+      ${window.renderAssumptions ? '<h2 class="sec">Реестр допущений модели</h2><div class="card" id="assumptionsBox"></div>' : ""}
       <h2 class="sec">Качество данных</h2>
       <div class="card">${dataQualityHtml()}</div>
       <h2 class="sec">Надёжность поставщиков</h2>
@@ -1125,6 +1357,8 @@
       Сентябрь 2026 неполный — в прогнозе не используется, остаток на сегодня рассчитан с учётом продаж с начала месяца.
       Данные клиентов не используются: разовый заказ определяется по номеру накладной. Автоматические тесты: <code>PYTHONPATH=. pytest -q</code> — требования ТЗ, календарь остатка, сценарии и сверка расчёта Python с браузером.</p></div>`;
     $$("#tab-method [data-open]").forEach((b) => b.addEventListener("click", () => openDrawer(b.dataset.open)));
+    try { if (window.renderCoverage) window.renderCoverage($("#coverageBox"), META.coverage); } catch (e) { console.warn("coverage", e); }
+    try { if (window.renderAssumptions) window.renderAssumptions($("#assumptionsBox"), META); } catch (e) { console.warn("assumptions", e); }
     $$("#tab-method [data-goto]").forEach((b) => b.addEventListener("click", () => switchTab("orders")));
   }
 
@@ -1149,6 +1383,7 @@
     if (state.tab === "orders") { renderFilters(); renderOrders(); }
     if (state.tab === "today") renderToday();
     if (state.tab === "scenarios") renderScenarios();
+    if (state.tab === "sandbox" && !document.activeElement?.closest("#tab-sandbox")) renderSandbox();
     if (state.tab === "analytics") renderAnalytics();
     if (state.tab === "calendar") renderCalendar();
     if (state.tab === "method") renderMethod();

@@ -18,7 +18,9 @@ module.exports = (Engine, input) => {
   const noBudget = Engine.allocateBudget(rows, 0);
   const ctx = { supName: () => "Systeme Electric", urgLabel: (u) => u, approval: () => "Черновик" };
   const exp = Engine.exportRows(rows.map((x) => ({ ...x, r: { ...x.r, status: x.r.status } })), p, ctx);
+  const today = (safeDay, final) => Engine.isOrderToday({ final, r: { safeDay } });
   return {
+    orderToday: [today(-1, 0), today(0, 5), today(3, 5), today(null, 5), today(-10, 1)],
     coverage: cov,
     budget: { mark: budget.mark, spent: budget.spent, criticalNoPrice: budget.criticalNoPrice.map((x) => x.s.id) },
     noBudget,

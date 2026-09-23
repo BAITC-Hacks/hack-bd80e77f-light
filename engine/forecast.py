@@ -118,16 +118,25 @@ def detect_oneoffs(lines: pd.DataFrame, sales: pd.DataFrame) -> pd.DataFrame:
 # ------------------------------------------------------------------------------------------
 # 2. Фильтр Хампеля
 # ------------------------------------------------------------------------------------------
-def hampel_cap(x: np.ndarray, active: np.ndarray, window: int = 3) -> tuple[np.ndarray, np.ndarray]:
-    """Срезает резкие одиночные всплески вверх до медиана + 3·MAD окна ±window мес."""
+def hampel_cap(x: np.ndarray, active: np.ndarray, window: int = 3,
+               ref: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """Срезает резкие одиночные всплески вверх до медиана + 3·MAD окна ±window мес.
+
+    ref — месяцы, по которым считается «норма» (по умолчанию все активные). Месяцы без товара
+    (stockout) в норму не входят и сами не срезаются: нулевые продажи при дефиците иначе
+    превращают обычный месяц после дефицита в «всплеск».
+    """
+    ref = active if ref is None else ref
     y = x.copy()
     capped = np.zeros(len(x), dtype=bool)
-    for i in np.flatnonzero(active):
+    for i in np.flatnonzero(active & ref):
         lo, hi = max(0, i - window), min(len(x), i + window + 1)
-        w = x[lo:hi][active[lo:hi]]
+        w = x[lo:hi][ref[lo:hi]]
         if len(w) < 5:
             continue
         med = np.median(w)
+        if med <= 0:
+            continue
         mad = np.median(np.abs(w - med)) * MAD_SCALE
         lim = med + HAMPEL_K * max(mad, 0.25 * med, 1.0)
         if x[i] > lim and x[i] > 2 * med:
@@ -248,7 +257,8 @@ def analyze_sku(code: str, raw: np.ndarray, stock: np.ndarray, oneoff_by_month: 
     avail[~active] = 1.0
     for use_oneoff in (True, False):
         base = no_oneoff if use_oneoff else raw
-        capped_series, capped = hampel_cap(base, active) if use_oneoff else (base, np.zeros(n, bool))
+        capped_series, capped = (hampel_cap(base, active, ref=active & (avail >= 1)) if use_oneoff
+                                 else (base, np.zeros(n, bool)))
         S, w = sku_season(capped_series, months, supplier_s, active)
         for use_restore in (True, False):
             x = capped_series.copy()

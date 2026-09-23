@@ -82,6 +82,11 @@ def unit():
     return run_node({"meta": META, "cases": [], "unit": {"p": p}})["extra"]
 
 
+def test_order_today_single_definition(unit):
+    """«Заказать сегодня» — одно определение: заказ > 0 и безопасный день наступил или прошёл."""
+    assert unit["orderToday"] == [False, True, False, False, True]
+
+
 def test_11_price_coverage(unit):
     cov = unit["coverage"]
     assert cov["lines"] == 4 and cov["priced"] == 2 and cov["missing"] == 2
@@ -117,3 +122,47 @@ def test_15_export_has_no_invalid_values(unit):
             assert v is not None, k
             assert not (isinstance(v, str) and v.lower() in ("nan", "infinity", "undefined", "null")), k
             assert not (isinstance(v, float) and not math.isfinite(v)), k
+
+
+def test_steps_1_to_5_same_in_python_and_js():
+    """Очистка выбросов, stockout, сезонность и тренд в браузере (вкладка «Проверить расчёт»)
+    совпадают с Python на разных рядах."""
+    import numpy as np
+    import pandas as pd
+    from engine.forecast import analyze_sku
+
+    months = list(pd.period_range("2024-01", "2026-08", freq="M"))
+    meta = dict(META, months=[f"{m.month:02d} {str(m.year)[2:]}" for m in months], monthNums=[m.month for m in months])
+    rng = np.random.default_rng(7)
+    season = np.array([.6, .6, .8, 1, 1.1, 1.2, 1.4, 1.4, 1.1, 1, .9, .7])
+    cases = []
+    for k in range(6):
+        raw = np.round(100 * season[[m.month - 1 for m in months]] * (1 + 0.02 * np.arange(32)) + rng.normal(0, 12, 32)).clip(0)
+        stock = np.full(33, 500.0)
+        oneoff = np.zeros(32)
+        if k in (1, 4):
+            raw[25] += 3000; oneoff[25] = 3000           # разовый заказ
+        if k in (2, 4):
+            raw[20:23] = [5, 0, 3]; stock[20:24] = 0       # stockout
+        if k == 3:
+            raw[18] += 900                                 # всплеск без накладной → Хампель
+        if k == 5:
+            raw[:10] = 0; stock[:10] = 0                   # товар появился позже
+        a = analyze_sku("X", raw.copy(), stock, oneoff, months, season / season.mean())
+        cases.append({"raw": raw.tolist(), "avail": a.avail.tolist(), "oneoff": oneoff.tolist(),
+                      "S": (season / season.mean()).tolist(),
+                      "expect": {key: [e["level"], e["growth"], e["sd"]] for key, e in
+                                 {f"{int(o)}{int(r)}{int(se)}": e for (o, r, se), e in a.variants.items()}.items()},
+                      "cln": a.clean.tolist(), "rst": a.restored.tolist()})
+    payload = {"meta": meta, "cases": [], "series": cases}
+    res = subprocess.run([NODE, "-e", """
+      const fs=require('fs'); const inp=JSON.parse(fs.readFileSync(0,'utf8'));
+      globalThis.DATA={meta:inp.meta,skus:[]}; const E=require(process.cwd()+'/web/engine.js');
+      const out=inp.series.map(c=>E.analyzeSeries({raw:c.raw,avail:c.avail,oneoff:c.oneoff,supplierS:c.S}));
+      process.stdout.write(JSON.stringify(out));"""], input=json.dumps(payload), capture_output=True, text=True,
+                         check=True, cwd=ROOT)
+    got = json.loads(res.stdout)
+    for c, g in zip(cases, got):
+        for key, exp in c["expect"].items():
+            assert np.allclose(g["v"][key], exp, rtol=1e-9, atol=1e-9), key
+        assert np.allclose(g["cln"], c["cln"]) and np.allclose(g["rst"], c["rst"])

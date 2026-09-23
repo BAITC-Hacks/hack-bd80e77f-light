@@ -106,3 +106,23 @@ def test_backtest_has_no_future_leakage():
     assert f2["fact"] > f1["fact"] * 5
     m = metrics(pd.DataFrame([{"forecast": 100, "fact": 80, "naive": 0}, {"forecast": 50, "fact": 70, "naive": 0}]))
     assert m["wape"] == round(40 / 150, 3) and m["bias"] == 0.0
+
+
+def test_stockout_does_not_make_normal_month_a_spike():
+    """Месяцы без товара не входят в «норму» фильтра выбросов: обычные продажи после дефицита
+    не срезаются, а восстановленный спрос не ниже очищенного и не ниже факта в месяцах с товаром."""
+    import numpy as np
+    import pandas as pd
+    from engine.forecast import analyze_sku
+
+    months = list(pd.period_range("2024-01", "2026-08", freq="M"))
+    raw = np.full(32, 100.0)
+    stock = np.full(33, 500.0)
+    raw[26:29] = 0
+    stock[26:30] = 0                                   # три месяца без товара
+    a = analyze_sku("X", raw.copy(), stock, np.zeros(32), months, np.ones(12))
+    assert not a.capped.any(), "обычные месяцы после дефицита не должны считаться всплеском"
+    assert (a.restored >= a.clean - 1e-9).all()
+    ok = a.avail >= 1
+    assert np.allclose(a.clean[ok], raw[ok])
+    assert a.variants[(True, True, True)]["level"] > 90

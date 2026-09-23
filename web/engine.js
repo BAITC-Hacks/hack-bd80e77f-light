@@ -212,6 +212,10 @@ const Engine = (() => {
       || (a.s.id < b.s.id ? -1 : 1);
   }
 
+  /** Единое определение «Заказать сегодня»: есть что заказать и последний безопасный день наступил или прошёл.
+   *  Используется в показателе, календаре, сценариях и выгрузке. */
+  const isOrderToday = (x) => x.final > 0 && x.r.safeDay != null && x.r.safeDay <= 0;
+
   // ---------------- деньги: только известные цены ----------------
   const hasPrice = (s) => typeof s.pr === "number" && isFinite(s.pr) && s.pr > 0;
   /** Стоимость и покрытие ценами по строкам к заказу. Нет цены ≠ 0 ₸. */
@@ -286,9 +290,128 @@ const Engine = (() => {
     });
   }
 
+  // ---------------- шаги 1–5 для ручной проверки (копия engine/forecast.py::analyze_sku) ----------------
+  const median = (a) => { const b = [...a].sort((x, y) => x - y); const n = b.length; return n % 2 ? b[(n - 1) / 2] : (b[n / 2 - 1] + b[n / 2]) / 2; };
+  const mean = (a) => sum(a) / a.length;
+  const std1 = (a) => { const m = mean(a); return Math.sqrt(sum(a.map((x) => (x - m) ** 2)) / (a.length - 1)); };
+  const MAD_SCALE = 1.4826;
+
+  /** Фильтр Хампеля: срезает одиночные всплески вверх до медиана + 3·MAD окна ±3 мес.
+   *  ref — месяцы для расчёта «нормы»: месяцы без товара в неё не входят и сами не срезаются. */
+  function hampelCap(x, active, win = 3, ref = active) {
+    const y = x.slice(), capped = x.map(() => false);
+    x.forEach((v, i) => {
+      if (!active[i] || !ref[i]) return;
+      const w = [];
+      for (let j = Math.max(0, i - win); j < Math.min(x.length, i + win + 1); j++) if (ref[j]) w.push(x[j]);
+      if (w.length < 5) return;
+      const med = median(w);
+      if (med <= 0) return;
+      const mad = median(w.map((q) => Math.abs(q - med))) * MAD_SCALE;
+      const lim = med + 3 * Math.max(mad, 0.25 * med, 1);
+      if (v > lim && v > 2 * med) { y[i] = lim; capped[i] = true; }
+    });
+    return [y, capped];
+  }
+
+  /** Сезонность артикула: собственный профиль по полным годам, «стянутый» к профилю поставщика. */
+  function skuSeason(series, monthNums, years, supplierS, active) {
+    const ratios = Array.from({ length: 12 }, () => []);
+    [...new Set(years)].sort().forEach((yr) => {
+      const idx = years.map((y, i) => (y === yr && i < series.length ? i : -1)).filter((i) => i >= 0);
+      if (idx.length < 12 || !idx.every((i) => active[i])) return;
+      const m = mean(idx.map((i) => series[i]));
+      if (m <= 0) return;
+      idx.forEach((i) => ratios[monthNums[i] - 1].push(series[i] / m));
+    });
+    const full = Math.min(...ratios.map((r) => r.length));
+    if (full === 0) return [supplierS.slice(), 0];
+    const own = ratios.map(mean);
+    const act = series.filter((_, i) => active[i]);
+    const nonzero = act.length ? act.filter((v) => v > 0).length / act.length : 0;
+    const w = Math.min(0.6, 0.3 * full) * nonzero;
+    let S = own.map((o, k) => Math.min(3, Math.max(0.3, w * o + (1 - w) * supplierS[k])));
+    const sm = mean(S);
+    S = S.map((v) => v / sm);
+    return [S, w];
+  }
+
+  /** Уровень без сезонности (6 мес.), рост г/г (−30…+50 %), σ за 12 мес. */
+  function estimate(series, monthNums, S, active) {
+    const idx = series.map((_, i) => i).filter((i) => active[i]);
+    if (!idx.length) return { level: 0, growth: 0, sd: 0 };
+    const des = series.map((v, i) => v / S[monthNums[i] - 1]);
+    const last = idx.slice(-6);
+    const level = mean(last.map((i) => des[i]));
+    const prev = last.map((i) => i - 12);
+    let growth = 0;
+    if (Math.min(...prev) >= 0 && prev.every((i) => active[i])) {
+      const base = sum(prev.map((i) => des[i]));
+      if (base > 0) growth = Math.min(0.5, Math.max(-0.3, sum(last.map((i) => des[i])) / base - 1));
+    }
+    const tail = idx.slice(-12).map((i) => des[i]);
+    let sd = tail.length >= 3 ? std1(tail) : level;
+    if (level > 0) sd = Math.min(sd, 1.5 * level);
+    return { level, growth, sd };
+  }
+
+  /** Доля месяца в наличии по остаткам на начало месяца (копия availability()). */
+  function availability(stockStart, sales) {
+    const s = stockStart.map((v) => (v == null || !isFinite(v) ? 0 : v));
+    return sales.map((q, m) => {
+      const start = s[m], end = m + 1 < s.length ? s[m + 1] : s[m];
+      if (start <= 0 && end <= 0) return q <= 0 ? 0.1 : 0.4;
+      if (start <= 0 || end <= 0) return 0.6;
+      return 1;
+    });
+  }
+
+  /** Полный анализ ряда: raw — продажи по месяцам, avail — доля месяца в наличии,
+   *  oneoff — объём разовых заказов по месяцам, supplierS — сезонность поставщика. */
+  function analyzeSeries({ raw, avail, oneoff, supplierS, start = null }) {
+    const n = raw.length;
+    const monthNums = META.monthNums.slice(0, n);
+    const years = META.months.slice(0, n).map((m) => +m.slice(-2));
+    const x0 = raw.map((v) => (isFinite(v) ? Math.max(v, 0) : 0));
+    const first = start ?? (x0.findIndex((v) => v > 0) >= 0 ? x0.findIndex((v) => v > 0) : n);
+    const active = x0.map((_, i) => i >= first);
+    const av = avail.map((a, i) => (active[i] ? a : 1));
+    const noOne = x0.map((v, i) => Math.max(v - (oneoff[i] || 0), 0));
+    const ones = new Array(12).fill(1);
+    const v = {}, series = {};
+    for (const useO of [true, false]) {
+      const base = useO ? noOne : x0;
+      const [capd, capped] = useO ? hampelCap(base, active, 3, active.map((a, i) => a && av[i] >= 1)) : [base, base.map(() => false)];
+      const [S, w] = skuSeason(capd, monthNums, years, supplierS, active);
+      for (const useR of [true, false]) {
+        const xs = capd.slice();
+        if (useR && av.some((a) => a < 1)) {
+          const ok = active.map((a, i) => a && av[i] >= 1);
+          const est = estimate(xs, monthNums, S, ok.some(Boolean) ? ok : active);
+          av.forEach((a, m) => {
+            if (a >= 1) return;
+            const expected = est.level * S[monthNums[m] - 1];
+            xs[m] = Math.max(xs[m], Math.min(expected, xs[m] + (1 - a) * expected));
+          });
+        }
+        series[`${+useO}${+useR}`] = { xs, capped, S, w };
+        for (const useS of [true, false]) {
+          const e = estimate(xs, monthNums, useS ? S : ones, active);
+          v[`${+useO}${+useR}${+useS}`] = [e.level, e.growth, e.sd];
+        }
+      }
+    }
+    const c = series["10"], r = series["11"];
+    return {
+      v, S: c.S, sw: c.w, nh: active.filter(Boolean).length, raw: x0, cln: c.xs, rst: r.xs,
+      av: av.some((a) => a < 1) ? av : undefined,
+      cap: c.capped.some(Boolean) ? c.capped.map((b, i) => (b ? i : -1)).filter((i) => i >= 0) : undefined,
+    };
+  }
+
   return {
-    plan, calc, projection, sensitivity, explain, horizon, dateOf, dayOf, fmtDay, isoDay, T0,
-    STATUS, actionCompare, priceCoverage, allocateBudget, dataQuality, exportRows, hasPrice, SC,
+    analyzeSeries, availability, plan, calc, projection, sensitivity, explain, horizon, dateOf, dayOf, fmtDay, isoDay, T0,
+    STATUS, actionCompare, isOrderToday, priceCoverage, allocateBudget, dataQuality, exportRows, hasPrice, SC,
   };
 })();
 if (typeof module !== "undefined") module.exports = Engine;
