@@ -4,13 +4,7 @@
 
 <br>
 
-<img src="assets/readme/value-banner.png" alt="Дефицит забирает прибыль. Излишки забирают деньги из оборота. Система заранее показывает риски и помогает сохранить продажи через 45 дней. Заказчик — ТОО Электрокомплект, команда Light, HACKALEM AI 2026." width="100%">
-
-<br><br>
-
-<a href="https://umny-zakup.vercel.app/">
-  <img src="assets/readme/open-service-v2.svg" alt="Запустить сервис Умный Закуп" width="100%">
-</a>
+<img src="assets/readme/value-banner.png" alt="Дефицит забирает прибыль. Излишки забирают деньги из оборота. Система заранее показывает риски и помогает сохранить продажи через 45 дней. Заказчик — ТОО Электрокомплект, команда Light, HACKALEM AI 2026." width="100%"><a href="https://umny-zakup.vercel.app/"><img src="assets/readme/open-service-v2.svg" alt="Запустить сервис Умный Закуп" width="100%"></a>
 
 <br>
 
