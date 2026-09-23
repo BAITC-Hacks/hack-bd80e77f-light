@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/readme/title-banner-compact.png" alt="Умный Закуп — система прогнозирования дефицита и планирования заказов" width="100%">
+<img src="assets/readme/title-banner-compact-v2.png" alt="Умный Закуп — система прогнозирования дефицита и планирования заказов" width="100%">
 
 <br>
 
@@ -9,7 +9,7 @@
 <br><br>
 
 <a href="https://umny-zakup.vercel.app/">
-  <img src="assets/readme/open-service.svg" alt="Открыть работающий сервис Умный Закуп" width="100%">
+  <img src="assets/readme/open-service-v2.svg" alt="Запустить сервис Умный Закуп" width="100%">
 </a>
 
 <br>
